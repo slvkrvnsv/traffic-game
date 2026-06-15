@@ -14,7 +14,7 @@ import 'npc_states/state_pedestrian_yield.dart';
 /// Simple state-machine AI for NPC cars.
 ///
 /// Transitions are driven by sensor polling each frame.
-/// Each state returns a [desiredSpeed]; the car applies its own inertia.
+/// Each state rpeturns a [desiredSpeed]; the car applies its own inertia.
 class NpcBrain {
   // Initialized eagerly so stateName is safe before onMount fires.
   NpcState _state = StateCruising();
@@ -113,16 +113,20 @@ class NpcBrain {
 
   /// Hard safety layer: regardless of state, cap speed on the realistic
   /// stopping curve so the NPC always halts behind the car ahead with a
-  /// standing buffer — no piling up or overlapping when a queue stops.
+  /// standing buffer — no piling up or overlapping when a queue stops. The
+  /// reserved braking distance is reduced by [kNpcFollowReactionScale] so the
+  /// NPC stays at speed a bit longer before it has to brake for a cut-in.
   double _collisionAvoidance(double stateSpeed, NpcSensors s) {
     final gap = s.leadCarDistance; // bumper-to-bumper, null if nothing ahead
     if (gap == null) return stateSpeed;
 
     final brakeDist = gap - kNpcStandingGap;
     if (brakeDist <= 0) return 0.0; // at the buffer → stop
-    // v_max = sqrt(2 · a · d), using the car's *reliable* braking so the cap
-    // never lets us approach faster than we can actually stop.
-    final cap = math.sqrt(2 * kNpcBrakeDecel * brakeDist);
+    // v_max = sqrt(2 · a · d). Treating `a` as kNpcFollowReactionScale× the
+    // reliable decel means the car reserves that much less stopping distance —
+    // less twitchy when someone appears ahead, still bounded so it can stop.
+    final cap =
+        math.sqrt(2 * kNpcBrakeDecel * kNpcFollowReactionScale * brakeDist);
     return stateSpeed.clamp(0.0, cap);
   }
 

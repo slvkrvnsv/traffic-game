@@ -5,8 +5,10 @@ import 'npc_state_base.dart';
 ///
 /// Uses a speed-dependent desired headway so fast cars leave a longer gap.
 /// Speed is linearly mapped between 0 (at [emergencyGap]) and profileSpeed
-/// (at [desiredGap]).  The collision-avoidance overlay in NpcBrain provides
-/// an additional safety net on top of this.
+/// (at [desiredGap]). The whole reaction range is pulled in by
+/// [kNpcFollowReactionScale] so the NPC tolerates someone appearing closer
+/// before it slows. The collision-avoidance overlay in NpcBrain provides an
+/// additional safety net on top.
 class StateFollowing extends NpcState {
   static const double _headwaySeconds = 0.8; // desired time gap
 
@@ -17,8 +19,11 @@ class StateFollowing extends NpcState {
 
     // Emergency gap: one car length bumper-to-bumper.
     const emergencyGap = kCarLength;
-    // Desired gap grows with speed so the NPC has room to brake.
-    final desiredGap = kNpcSafeGapDistance + s.currentSpeed * _headwaySeconds;
+    // Desired gap grows with speed so the NPC has room to brake; scaled in so a
+    // cut-in has to be closer before it triggers a slow-down.
+    final desiredGap =
+        (kNpcSafeGapDistance + s.currentSpeed * _headwaySeconds) /
+            kNpcFollowReactionScale;
 
     if (gap <= emergencyGap) return 0.0;
 

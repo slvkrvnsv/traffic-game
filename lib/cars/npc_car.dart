@@ -20,6 +20,11 @@ class NpcCar extends CarBase {
   /// reads this to carry the NPC seamlessly onto the next tile's lane.
   double pendingOverflow = 0.0;
 
+  /// Seconds this NPC has been waiting frozen at a leading seam with no
+  /// continuation (set by TileManager). Reset to 0 once carried onward; past
+  /// [kSeamWaitTimeoutSeconds] the car despawns instead of freezing forever.
+  double seamWaitTime = 0.0;
+
   NpcCar? leadCar;
 
   @override

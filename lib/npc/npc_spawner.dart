@@ -34,6 +34,12 @@ class NpcSpawner {
 
     final npc = NpcCar(definition: def, profileSpeed: speed);
     npc.laneIndex = laneIndex;
+    // Enter already at cruise, not from a standstill. CarBase.speed defaults to
+    // 0, so without this every spawned/refilled car would sit stopped at its
+    // lane entry (the tile edge) and crawl up from zero — looking like cars
+    // "stopping at a new tile entry". Collision-avoidance still caps it the same
+    // frame, and the spawner's jammed/min-distance guards keep the entry clear.
+    npc.speed = speed;
     npc.assignSpline(path, worldOffset: tileOrigin, worldAngle: tileAngle);
     npc.brain.isTurning = isTurning;
 
@@ -44,13 +50,21 @@ class NpcSpawner {
     return npc;
   }
 
-  void cullDistant(Vector2 playerPosition) {
+  void cullDistant(Vector2 playerPosition, Vector2 playerForward) {
     allNpcs.removeWhere((npc) {
-      final dist = playerPosition.distanceTo(npc.position);
-      // Always remove NPCs that have drifted far behind.
+      final delta = npc.position - playerPosition;
+      final dist = delta.length;
+      // Always remove NPCs that have drifted far away in any direction (well
+      // off-screen at the cull distance).
       final tooFar = dist > kNpcCullDistance;
-      // Remove parked NPCs (spline finished) once they're behind the camera.
-      final parkedAndBehind = npc.isAtSplineEnd && dist > kNpcCullDistance * 0.25;
+      // Remove parked NPCs (spline finished) at a closer distance to free the
+      // budget — but ONLY when they're behind the player. The same predicate
+      // without the direction test was culling same-direction through-traffic
+      // that had frozen *ahead* waiting for the next tile to stream in, making
+      // cars vanish on-screen at the end of a tile.
+      final behind = delta.dot(playerForward) < 0;
+      final parkedAndBehind =
+          npc.isAtSplineEnd && behind && dist > kNpcCullDistance * 0.25;
       final shouldCull = tooFar || parkedAndBehind;
       if (shouldCull) {
         npc.removeFromParent();

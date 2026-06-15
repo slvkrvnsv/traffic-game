@@ -1,6 +1,7 @@
 import 'package:flame/components.dart';
 import '../cars/player_car.dart';
 import '../core/maneuver.dart';
+import '../feedback/driver_reaction_detector.dart';
 import '../pedestrians/pedestrian.dart';
 import '../rules/exam_error_recorder.dart';
 import '../rules/rule_validator.dart';
@@ -48,6 +49,14 @@ class GameWorld extends World {
       pedestrians: pedestrians,
     );
     add(violationDetector);
+
+    // NPC driver reactions (red bubble when the player cuts someone off). Purely
+    // additive feedback — does not affect the fail model.
+    add(DriverReactionDetector(
+      playerCar: playerCar,
+      tileManager: tileManager,
+      world: this,
+    ));
 
     ruleValidator = RuleValidator();
     // Evaluate rule events against the scenario for the tile the player is on.

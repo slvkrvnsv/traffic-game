@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../feedback/driver_reaction.dart';
 import 'maneuver.dart';
 
 // ---------------------------------------------------------------------------
@@ -32,6 +33,18 @@ class RedLightViolationEvent extends GameEvent {}
 class RoadBlockingEvent extends GameEvent {
   RoadBlockingEvent({required this.duration});
   final double duration;
+}
+
+/// An NPC driver reacted to something the player did to them (e.g. a cut-off
+/// that forced a hard brake). Data-only — carries the reaction kind and where
+/// it happened, never a live car reference, so it stays safe to record/serialise.
+/// The visible bubble is spawned directly by the detector; this event is the
+/// decoupled hook for future scoring / fault-sheet integration.
+class DriverReactionEvent extends GameEvent {
+  DriverReactionEvent({required this.reaction, required this.worldX, required this.worldY});
+  final DriverReaction reaction;
+  final double worldX;
+  final double worldY;
 }
 
 /// Positive confirmation — player correctly stopped / yielded.

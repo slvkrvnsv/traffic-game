@@ -64,6 +64,13 @@ const double kNpcMaxSpeed = kNpcMaxSpeedKmh / kSpeedToKmh; // 300 u/s
 const double kNpcTurnSpeedKmh = 25.0; // max speed through a curve
 const double kNpcTurnSpeed = kNpcTurnSpeedKmh / kSpeedToKmh; // 125 u/s
 const double kNpcBrakeDecel = 225.0; // u/s² reliable NPC decel (stop lines + following)
+/// How much LESS braking distance an NPC reserves for a car ahead than a
+/// flat-out stopping calculation would (it assumes it can brake this many times
+/// harder than [kNpcBrakeDecel] when judging a moving lead). Higher = they let
+/// you get closer / brake later and softer when you appear in front; 1.0 =
+/// reserve the full distance (twitchy). This is THE knob for "less sensitive
+/// to a cut-in" without killing the reaction entirely.
+const double kNpcFollowReactionScale = 1.5;
 
 // Distances (not speeds) — independent of the speed scale.
 const double kNpcSafeGapDistance = 90.0; // min gap to car ahead (bumper to bumper)
@@ -98,6 +105,14 @@ const double kHandOffTriggerT = 0.75;
 
 /// How many tiles to keep alive ahead of the player.
 const int kTilesAhead = 2;
+
+/// How long (seconds) a through-traffic NPC may wait frozen at a dead leading
+/// seam — no tile streamed in beyond it — before it despawns instead of
+/// freezing forever. During normal driving the next tile streams in well under
+/// this, so the car just continues; only when the player is stationary (no
+/// hand-off, so no new tile) would cars otherwise pile up frozen and leak the
+/// NPC budget. Off-screen by construction, so the despawn is invisible.
+const double kSeamWaitTimeoutSeconds = 1.5;
 
 /// Pedestrian render priority (cars use CarBase priority 5/10).
 const int kPedestrianPriority = 2;
@@ -153,6 +168,33 @@ const double kLaneCommitFraction = 0.6;
 /// How far past an edge lane the car may lean (fraction of a lane) when there
 /// is no further lane to commit to — gives a soft "nothing there" feel.
 const double kLaneEdgePullFraction = 0.4;
+
+// ---------------------------------------------------------------------------
+// Driver reactions (player-error feedback)
+// ---------------------------------------------------------------------------
+// An NPC reacts (red bubble) when the player forces it to brake hard — e.g.
+// cutting in on an overtake. The discriminator vs. ordinary following is the
+// *required* deceleration on a rising edge, measured against the distance the
+// NPC actually plans its braking over: a_req = v² / (2·brakeDist), where
+// brakeDist = gap − kNpcStandingGap. Steady following holds the NPC at
+// v = sqrt(2·kNpcBrakeDecel·brakeDist), so there a_req == kNpcBrakeDecel exactly
+// — independent of speed and distance. a_req only exceeds kNpcBrakeDecel when
+// the gap stepped down faster than the controller could react (a cut-in or
+// brake-check), so the threshold is a multiplier ABOVE 1. Per-NPC cooldown keeps
+// it to one bubble per incident.
+/// Multiple of [kNpcBrakeDecel] the required decel must exceed to count as a
+/// forced hard brake. Must be > 1 (steady following sits exactly at 1×); the
+/// headroom also absorbs per-frame braking jitter.
+const double kReactHardBrakeMultiplier = 1.3;
+/// NPC must be moving at least this fast to react — skips stop-and-go, where a
+/// tiny gap spikes a_req harmlessly.
+const double kReactMinSpeedKmh = 12.0;
+const double kReactMinSpeed = kReactMinSpeedKmh / kSpeedToKmh;
+/// Quiet period (seconds) after an NPC reacts before it can react again.
+const double kReactCooldownSeconds = 4.0;
+/// Only react when the NPC is roughly on-screen — no feedback for cars the
+/// player can't see. Sized to the visible radius (see [kCameraZoom]).
+const double kReactMaxDistance = 760.0;
 
 // ---------------------------------------------------------------------------
 // Indicator blink

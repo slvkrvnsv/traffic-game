@@ -61,8 +61,13 @@ class TileManager extends Component {
   static const double _refillInterval = 1.8;
 
   /// Don't spawn if the spawn point is within this distance of the player
-  /// (prevents cars materialising on-screen).
-  static const double _minSpawnDistFromPlayer = 520.0;
+  /// (prevents cars materialising on-screen). Must comfortably exceed the
+  /// visible radius — at zoom [kCameraZoom] the camera shows ~screen/2/zoom
+  /// world units in each direction, plus the [kCameraForwardOffset] look-ahead,
+  /// so the worst-case (corner, ahead) visible distance from the player is
+  /// roughly 1000 units on a phone. Spawning nearer than this is what made
+  /// cars pop into view at the start of a tile.
+  static const double _minSpawnDistFromPlayer = 1100.0;
 
   double _refillClock = 0.0;
 
@@ -145,7 +150,7 @@ class TileManager extends Component {
   void update(double dt) {
     super.update(dt);
     _checkHandOff();
-    _advanceNpcsAcrossSeams();
+    _advanceNpcsAcrossSeams(dt);
     _updateNpcSensors(dt);
     _cullDistantNpcs();
     _cullTrailingTiles();
@@ -224,10 +229,15 @@ class TileManager extends Component {
   /// stops cars freezing at tile boundaries. NPCs with no continuation either
   /// despawn (behind the player) or briefly wait (ahead, off-screen) until the
   /// next tile streams in.
-  void _advanceNpcsAcrossSeams() {
-    // Snapshot first — we mutate tile.npcs lists while iterating.
+  void _advanceNpcsAcrossSeams(double dt) {
+    // Snapshot first — we mutate tile.npcs lists while iterating. Trailing tiles
+    // are included: through-traffic the player has passed keeps driving on the
+    // tile behind them, and when it reaches that tile's far seam it must be
+    // carried onto the active tile across the boundary. Iterating only the
+    // active tiles left those cars stuck (parked) at the seam right behind a
+    // resting player — visibly freezing, then getting culled.
     final reached = <(NpcCar, TileBase)>[];
-    for (final tile in _activeTiles) {
+    for (final tile in [..._activeTiles, ..._trailingTiles]) {
       for (final npc in tile.npcs) {
         if (npc.hasReachedEnd) reached.add((npc, tile));
       }
@@ -248,6 +258,7 @@ class TileManager extends Component {
           worldAngle: next.tile.orientation,
         );
         npc.pendingOverflow = 0.0;
+        npc.seamWaitTime = 0.0; // found a continuation — no longer waiting
         npc.laneIndex = next.lane;
         // The continuation may bend (e.g. a turn through the next
         // intersection) — keep the indicator/turn-slow-down machinery honest.
@@ -266,9 +277,14 @@ class TileManager extends Component {
       final sameWayAsPlayer = npcDir.dot(playerFwd) > 0.7;
       final ahead = (npc.position - playerCar.position).dot(playerFwd) >= 0;
 
-      if (sameWayAsPlayer && ahead) {
+      if (sameWayAsPlayer && ahead && npc.seamWaitTime < kSeamWaitTimeoutSeconds) {
+        // Hold briefly for the tile ahead to stream in (normal driving streams
+        // it well within the timeout). If it never comes — the player is
+        // stationary, so no hand-off — give up rather than freeze forever and
+        // leak the NPC budget; it's off-screen at the leading seam anyway.
         npc.speed = 0.0;
         npc.targetSpeed = 0.0;
+        npc.seamWaitTime += dt;
       } else {
         npc.removeFromParent();
         _spawner.allNpcs.remove(npc);
@@ -402,7 +418,10 @@ class TileManager extends Component {
   // ---------------------------------------------------------------------------
 
   void _cullDistantNpcs() {
-    _spawner.cullDistant(playerCar.position);
+    // Use the corridor heading (not the body angle, which carries lane-change
+    // yaw) so "behind" stays stable during a lane change.
+    final fwd = Vector2(cos(playerCar.splineAngle), sin(playerCar.splineAngle));
+    _spawner.cullDistant(playerCar.position, fwd);
   }
 
   // ---------------------------------------------------------------------------
