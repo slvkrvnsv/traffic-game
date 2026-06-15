@@ -1,0 +1,93 @@
+import 'dart:async';
+import 'maneuver.dart';
+
+// ---------------------------------------------------------------------------
+// Event hierarchy (sealed)
+// ---------------------------------------------------------------------------
+
+sealed class GameEvent {}
+
+/// Player crashed into an NPC car or pedestrian.
+class CollisionEvent extends GameEvent {
+  CollisionEvent({required this.otherType});
+  final String otherType; // 'npc_car' | 'pedestrian'
+}
+
+/// Player blew through a yield line at unsafe speed.
+class YieldViolationEvent extends GameEvent {
+  YieldViolationEvent({required this.speedAtLine});
+  final double speedAtLine;
+}
+
+/// Player did not stop fully at a stop-sign line.
+class StopSignViolationEvent extends GameEvent {
+  StopSignViolationEvent({required this.minSpeedObserved});
+  final double minSpeedObserved;
+}
+
+/// Player crossed a red light.
+class RedLightViolationEvent extends GameEvent {}
+
+/// Player sat still on a clear road with no reason to wait — blocking traffic.
+class RoadBlockingEvent extends GameEvent {
+  RoadBlockingEvent({required this.duration});
+  final double duration;
+}
+
+/// Positive confirmation — player correctly stopped / yielded.
+class RulePassedEvent extends GameEvent {}
+
+/// Tile was successfully completed.
+class TileCompletedEvent extends GameEvent {
+  TileCompletedEvent({required this.tileType});
+  final String tileType;
+}
+
+/// Tile ready to be activated (next tile spawned).
+class TileReadyEvent extends GameEvent {
+  TileReadyEvent({required this.tileType});
+  final String tileType;
+}
+
+/// Game over — includes reason string for the UI.
+class GameOverEvent extends GameEvent {
+  GameOverEvent({required this.reason});
+  final String reason;
+}
+
+/// Player's car was handed off to the next tile's spline.
+class PlayerHandOffEvent extends GameEvent {}
+
+/// The exam instruction for the tile the player just entered.
+/// [maneuver] is null on tiles with no instruction (plain road) — HUD hides.
+class ManeuverAnnouncedEvent extends GameEvent {
+  ManeuverAnnouncedEvent({required this.maneuver});
+  final Maneuver? maneuver;
+}
+
+// ---------------------------------------------------------------------------
+// Bus
+// ---------------------------------------------------------------------------
+
+/// Global typed event bus. Decouple systems; no direct references needed.
+///
+/// Usage:
+///   GameBus.instance.emit(CollisionEvent(otherType: 'npc_car'));
+///   GameBus.instance.on`<CollisionEvent>`().listen((e) { ... });
+class GameBus {
+  GameBus._();
+  static final GameBus instance = GameBus._();
+
+  final StreamController<GameEvent> _controller =
+      StreamController<GameEvent>.broadcast();
+
+  Stream<GameEvent> get stream => _controller.stream;
+
+  void emit(GameEvent event) => _controller.add(event);
+
+  /// Filtered stream for a specific event type.
+  Stream<T> on<T extends GameEvent>() =>
+      _controller.stream.where((e) => e is T).cast<T>();
+
+  void dispose() => _controller.close();
+}
