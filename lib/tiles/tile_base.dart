@@ -116,6 +116,16 @@ abstract class TileBase extends PositionComponent {
   /// Default: a plain road never requires the player to wait.
   bool get playerMustWait => false;
 
+  /// Posted speed limit for this tile in km/h, or null for no limit. Authored
+  /// in km/h (designer-facing); enforcement compares against the player's speed
+  /// via [speedLimitUnits]. Hook for the upcoming per-tile speed-limit feature —
+  /// override per tile/scenario; not yet enforced.
+  double? get speedLimitKmh => null;
+
+  /// [speedLimitKmh] converted to world units/sec, or null when unlimited.
+  double? get speedLimitUnits =>
+      speedLimitKmh == null ? null : kmhToUnits(speedLimitKmh!);
+
   // ---------------------------------------------------------------------------
   // Update
   // ---------------------------------------------------------------------------

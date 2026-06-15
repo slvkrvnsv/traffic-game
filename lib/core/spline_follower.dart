@@ -18,19 +18,39 @@ mixin SplineFollower {
 
   Spline? get spline => _spline;
 
+  /// Signed lateral offset (world units) applied perpendicular to the direction
+  /// of travel, positive = right of travel. Used to slide a car off its lane
+  /// centreline during a lane change while it keeps advancing along the new
+  /// lane's spline; eased back to 0 once the manoeuvre completes.
+  double lateralOffset = 0.0;
+
   double get currentT =>
       _spline == null ? 0.0 : _distanceTravelled / _spline!.totalLength;
 
   bool get hasReachedEnd => currentT >= 1.0;
 
-  /// World-space position: tile rotation applied to the local spline point,
-  /// then the tile's world offset.
-  Vector2 get splinePosition {
+  /// World-space position on the lane *centreline*, ignoring [lateralOffset].
+  /// Used for seam matching so a lane-change lean doesn't bias which lane the
+  /// player is handed to.
+  Vector2 get splineCentrePosition {
     final local = _spline?.evaluate(currentT) ?? Vector2.zero();
     return Vector2(
       _worldOffset.x + local.x * _cosA - local.y * _sinA,
       _worldOffset.y + local.x * _sinA + local.y * _cosA,
     );
+  }
+
+  /// World-space position: the lane centreline plus any [lateralOffset]
+  /// perpendicular to the travel direction.
+  Vector2 get splinePosition {
+    final base = splineCentrePosition;
+    if (lateralOffset != 0.0) {
+      final a = splineAngle;
+      // Right-hand perpendicular of the travel direction (screen y-down).
+      base.x += -math.sin(a) * lateralOffset;
+      base.y += math.cos(a) * lateralOffset;
+    }
+    return base;
   }
 
   /// World-space angle at current progress.

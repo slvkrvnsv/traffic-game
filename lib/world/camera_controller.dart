@@ -17,8 +17,12 @@ class CameraController extends Component {
   final PlayerCar playerCar;
 
   /// Heading used for both the look-ahead and the camera rotation, eased toward
-  /// the car's true angle so the view swings gently through a turn instead of
+  /// the car's heading so the view swings gently through a turn instead of
   /// snapping. null until the first frame seeds it from the car's heading.
+  ///
+  /// Tracks [PlayerCar.splineAngle] — the lane/corridor direction — rather than
+  /// the full body angle, so the camera rotates through actual turns but stays
+  /// steady during a lane change (the body yaw is ignored).
   double? _smoothedAngle;
 
   @override
@@ -26,8 +30,8 @@ class CameraController extends Component {
     super.update(dt);
 
     _smoothedAngle = _smoothedAngle == null
-        ? playerCar.angle
-        : lerpAngle(_smoothedAngle!, playerCar.angle, kCameraLookAheadLerpSpeed * dt);
+        ? playerCar.splineAngle
+        : lerpAngle(_smoothedAngle!, playerCar.splineAngle, kCameraLookAheadLerpSpeed * dt);
     final angle = _smoothedAngle!;
     final lookAhead = Vector2(
       kCameraForwardOffset * math.cos(angle),

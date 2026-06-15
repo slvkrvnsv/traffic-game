@@ -50,6 +50,15 @@ abstract class CarBase extends PositionComponent with SplineFollower {
   double _wheelSteerAngle = 0.0;
   double _targetWheelAngle = 0.0;
 
+  /// Extra yaw (radians) added to the spline heading. Used by the player during
+  /// a lane change so the body points where it's actually moving rather than
+  /// sliding sideways. Default 0 — NPCs always face along their spline.
+  double extraYaw = 0.0;
+
+  /// When non-null, overrides the spline-derived front-wheel steer angle (e.g.
+  /// to steer into a lane change on an otherwise straight road).
+  double? steerOverride;
+
   bool get leftIndicatorVisible => _leftIndicator && _indicatorBlinkState;
   bool get rightIndicatorVisible => _rightIndicator && _indicatorBlinkState;
 
@@ -80,10 +89,14 @@ abstract class CarBase extends PositionComponent with SplineFollower {
     _updateWheels(dt);
   }
 
+  /// Acceleration (units/s²) available at [currentSpeed]. Constant by default
+  /// (NPCs); PlayerCar overrides it with a speed-dependent power curve.
+  double accelerationAt(double currentSpeed) => kNpcAcceleration;
+
   void _updateMotion(double dt) {
     // Inertia: lerp speed toward targetSpeed
     if (targetSpeed > speed) {
-      speed = (speed + kPlayerAcceleration * dt).clamp(0.0, targetSpeed);
+      speed = (speed + accelerationAt(speed) * dt).clamp(0.0, targetSpeed);
     } else if (targetSpeed < speed) {
       final decel = isBraking ? kPlayerBraking * brakeFraction : rollingDrag;
       speed = (speed - decel * dt).clamp(0.0, double.infinity);
@@ -102,7 +115,7 @@ abstract class CarBase extends PositionComponent with SplineFollower {
     final sp = splinePosition;
     if (spline != null) {
       position.setFrom(sp);
-      angle = splineAngle;
+      angle = splineAngle + extraYaw;
     }
   }
 
@@ -134,6 +147,10 @@ abstract class CarBase extends PositionComponent with SplineFollower {
       _targetWheelAngle = normaliseAngle(angleAhead - angleNow).clamp(-0.6, 0.6);
     } else {
       _targetWheelAngle = 0.0;
+    }
+    // A lane-change steer takes precedence over spline-curvature steering.
+    if (steerOverride != null) {
+      _targetWheelAngle = steerOverride!.clamp(-0.6, 0.6);
     }
     _wheelSteerAngle = lerp(_wheelSteerAngle, _targetWheelAngle, 8 * dt);
   }

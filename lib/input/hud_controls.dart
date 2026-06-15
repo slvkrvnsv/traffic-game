@@ -1,16 +1,18 @@
 import 'package:flutter/material.dart';
+import '../core/constants.dart';
 import 'input_state.dart';
 
-/// Flutter overlay: a floating vertical joystick.
+/// Flutter overlay: one-thumb driving controls.
 ///
-/// It materialises under the finger on touch-down:
-///   • tap & hold (neutral)  → car accelerates up to the cruise speed (50 km/h)
-///   • swipe up              → throttle ramps from cruise toward max
-///   • swipe down            → brakes, harder the further you push
-///   • release               → inputs clear; the car coasts on inertia (rolling drag)
+///   • Gas / brake — two round buttons in the bottom-right corner.
+///     Press and hold to accelerate or brake; release to coast (rolling drag).
+///   • Lane change — drag horizontally anywhere else on the screen. The car
+///     steers under your finger and eases toward the next lane; pull it past
+///     the halfway point and it sticks to that lane (with a haptic click).
+///     A slight flinch just nudges it and it settles back.
 ///
-/// Horizontal movement is ignored — only the vertical offset from the touch
-/// origin matters. Gas/brake are written to [InputState]; PlayerCar reads them.
+/// The buttons sit above the swipe layer and swallow their own touches, so a
+/// lane-change drag never lands on a pedal and vice-versa.
 class HudControls extends StatefulWidget {
   const HudControls({super.key});
 
@@ -19,201 +21,136 @@ class HudControls extends StatefulWidget {
 }
 
 class _HudControlsState extends State<HudControls> {
-  /// Pixels of vertical travel from the origin for a full up/down command.
-  static const double _maxTravel = 87.0;
+  bool _gasDown = false;
+  bool _brakeDown = false;
+  double _dragDx = 0.0; // accumulated horizontal travel for the active drag
 
-  /// Throttle held at the neutral (hold) position: 50 of 150 km/h.
-  static const double _cruiseFraction = 50.0 / 150.0;
-
-  /// Dead zone around neutral so a steady hold stays at cruise without jitter.
-  static const double _deadZone = 10.0;
-
-  Offset? _origin; // where the finger first touched down (local coords)
-  double _dy = 0.0; // signed vertical offset from origin, up = positive
-
-  void _onStart(Offset p) {
-    _origin = p;
-    _setDy(0.0);
-  }
-
-  void _onUpdate(Offset p) {
-    _setDy(_origin!.dy - p.dy); // screen y grows downward → invert
-  }
-
-  void _setDy(double rawDy) {
-    setState(() => _dy = rawDy.clamp(-_maxTravel, _maxTravel));
-
+  void _setGas(bool down) {
+    setState(() => _gasDown = down);
     final input = InputState.instance;
-    if (_dy.abs() <= _deadZone) {
-      // Neutral hold → cruise.
+    if (down) {
       input.setBrakeLevel(0.0);
-      input.setGasLevel(_cruiseFraction);
-      return;
-    }
-
-    final norm = (_dy.abs() - _deadZone) / (_maxTravel - _deadZone);
-    // Progressive response: gentle near neutral, ramps hard toward the ends.
-    // Full swipe-down is an emergency stop; full swipe-up is max throttle.
-    final eased = norm * norm;
-    if (_dy > 0) {
-      // Up zone: cruise → full throttle.
-      input.setBrakeLevel(0.0);
-      input.setGasLevel(_cruiseFraction + (1.0 - _cruiseFraction) * eased);
+      input.setGasLevel(1.0);
     } else {
-      // Down zone: proportional braking.
       input.setGasLevel(0.0);
-      input.setBrakeLevel(eased);
     }
   }
 
-  void _onEnd() {
-    setState(() {
-      _origin = null;
-      _dy = 0.0;
-    });
-    InputState.instance.setGasLevel(0.0);
-    InputState.instance.setBrakeLevel(0.0);
+  void _setBrake(bool down) {
+    setState(() => _brakeDown = down);
+    final input = InputState.instance;
+    if (down) {
+      input.setGasLevel(0.0);
+      input.setBrakeLevel(1.0);
+    } else {
+      input.setBrakeLevel(0.0);
+    }
   }
+
+  void _onSwipeStart(DragStartDetails _) {
+    _dragDx = 0.0;
+    InputState.instance.setLaneSteer(0.0);
+  }
+
+  void _onSwipeUpdate(DragUpdateDetails d) {
+    _dragDx += d.delta.dx;
+    // Strip the deadzone so a slight flinch produces no movement at all.
+    double eff = 0.0;
+    if (_dragDx > kLaneSteerDeadzone) {
+      eff = _dragDx - kLaneSteerDeadzone;
+    } else if (_dragDx < -kLaneSteerDeadzone) {
+      eff = _dragDx + kLaneSteerDeadzone;
+    }
+    InputState.instance.setLaneSteer(eff);
+  }
+
+  void _onSwipeEnd() => InputState.instance.endLaneSteer();
 
   @override
   Widget build(BuildContext context) {
-    return Positioned.fill(
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onPanDown: (d) => _onStart(d.localPosition),
-        onPanStart: (d) => _onStart(d.localPosition),
-        onPanUpdate: (d) => _onUpdate(d.localPosition),
-        onPanEnd: (_) => _onEnd(),
-        onPanCancel: _onEnd,
-        child: _origin == null
-            ? const SizedBox.expand()
-            : CustomPaint(
-                size: Size.infinite,
-                painter: _JoystickPainter(
-                  origin: _origin!,
-                  dy: _dy,
-                  maxTravel: _maxTravel,
-                  deadZone: _deadZone,
-                ),
+    return Stack(
+      children: [
+        // Swipe layer — fills the screen, sits behind the pedals.
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragStart: _onSwipeStart,
+            onHorizontalDragUpdate: _onSwipeUpdate,
+            onHorizontalDragEnd: (_) => _onSwipeEnd(),
+            onHorizontalDragCancel: _onSwipeEnd,
+            child: const SizedBox.expand(),
+          ),
+        ),
+
+        // Pedals — bottom-right corner: brake (left) + gas (right).
+        Positioned(
+          right: 24,
+          bottom: 36,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _PedalButton(
+                icon: Icons.report_rounded,
+                color: const Color(0xFFEF4444),
+                pressed: _brakeDown,
+                onChanged: _setBrake,
               ),
-      ),
+              const SizedBox(width: 18),
+              _PedalButton(
+                icon: Icons.keyboard_double_arrow_up_rounded,
+                color: const Color(0xFF22C55E),
+                pressed: _gasDown,
+                onChanged: _setGas,
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
 
-class _JoystickPainter extends CustomPainter {
-  const _JoystickPainter({
-    required this.origin,
-    required this.dy,
-    required this.maxTravel,
-    required this.deadZone,
+/// A round hold-to-act pedal. Reports press/release via [onChanged].
+class _PedalButton extends StatelessWidget {
+  const _PedalButton({
+    required this.icon,
+    required this.color,
+    required this.pressed,
+    required this.onChanged,
   });
 
-  final Offset origin;
-  final double dy; // signed, up = positive
-  final double maxTravel;
-  final double deadZone;
+  final IconData icon;
+  final Color color;
+  final bool pressed;
+  final ValueChanged<bool> onChanged;
 
-  static const double _trackHalfWidth = 36.0;
-  static const double _knobRadius = 34.0;
+  static const double _size = 84.0;
 
   @override
-  void paint(Canvas canvas, Size size) {
-    final cx = origin.dx;
-    final cy = origin.dy;
-
-    // Track: a rounded capsule spanning the full travel range.
-    final trackRect = RRect.fromRectAndRadius(
-      Rect.fromLTRB(
-        cx - _trackHalfWidth,
-        cy - maxTravel - _knobRadius,
-        cx + _trackHalfWidth,
-        cy + maxTravel + _knobRadius,
-      ),
-      const Radius.circular(_trackHalfWidth),
-    );
-    canvas.drawRRect(trackRect, Paint()..color = const Color(0x22FFFFFF));
-
-    // Fill from neutral toward the knob, tinted by zone.
-    if (dy.abs() > deadZone) {
-      final knobY = cy - dy;
-      canvas.save();
-      canvas.clipRRect(trackRect);
-      final fillRect = dy > 0
-          ? Rect.fromLTRB(cx - _trackHalfWidth, knobY, cx + _trackHalfWidth, cy)
-          : Rect.fromLTRB(cx - _trackHalfWidth, cy, cx + _trackHalfWidth, knobY);
-      canvas.drawRect(fillRect, Paint()..color = _zoneColor());
-      canvas.restore();
-    }
-
-    // Neutral marker.
-    canvas.drawLine(
-      Offset(cx - _trackHalfWidth, cy),
-      Offset(cx + _trackHalfWidth, cy),
-      Paint()
-        ..color = const Color(0x66FFFFFF)
-        ..strokeWidth = 1.5,
-    );
-
-    // Track outline.
-    canvas.drawRRect(
-      trackRect,
-      Paint()
-        ..color = const Color(0x55FFFFFF)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.5,
-    );
-
-    // Knob.
-    final knobCenter = Offset(cx, cy - dy);
-    canvas.drawCircle(knobCenter, _knobRadius, Paint()..color = _zoneColor());
-    canvas.drawCircle(
-      knobCenter,
-      _knobRadius,
-      Paint()
-        ..color = const Color(0xCCFFFFFF)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5,
-    );
-
-    // Direction hint on the knob.
-    final icon = dy.abs() <= deadZone
-        ? Icons.drag_handle_rounded
-        : (dy > 0 ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded);
-    _paintIcon(canvas, icon, knobCenter);
-  }
-
-  Color _zoneColor() {
-    if (dy.abs() <= deadZone) return const Color(0xAA4CAF50);
-    final linear = (dy.abs() - deadZone) / (maxTravel - deadZone);
-    final norm = linear * linear; // match the progressive force curve
-    if (dy > 0) {
-      // Green → amber → red as throttle climbs.
-      return norm < 0.5
-          ? Color.lerp(const Color(0xAA4CAF50), const Color(0xAAFF9800), norm * 2)!
-          : Color.lerp(const Color(0xAAFF9800), const Color(0xAAF44336), (norm - 0.5) * 2)!;
-    }
-    // Braking: orange → deep red.
-    return Color.lerp(const Color(0xAAFF7043), const Color(0xAAEF1010), norm)!;
-  }
-
-  void _paintIcon(Canvas canvas, IconData icon, Offset center) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: String.fromCharCode(icon.codePoint),
-        style: TextStyle(
-          fontSize: 34,
-          fontFamily: icon.fontFamily,
-          package: icon.fontPackage,
-          color: Colors.white,
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => onChanged(true),
+      onTapUp: (_) => onChanged(false),
+      onTapCancel: () => onChanged(false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 80),
+        width: _size,
+        height: _size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: pressed ? color : color.withValues(alpha: 0.55),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.85), width: 3),
+          boxShadow: [
+            BoxShadow(
+              color: color.withValues(alpha: pressed ? 0.6 : 0.25),
+              blurRadius: pressed ? 18 : 8,
+              spreadRadius: pressed ? 2 : 0,
+            ),
+          ],
         ),
+        child: Icon(icon, color: Colors.white, size: 40),
       ),
-      textDirection: TextDirection.ltr,
-    )..layout();
-    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+    );
   }
-
-  @override
-  bool shouldRepaint(_JoystickPainter old) =>
-      old.origin != origin || old.dy != dy;
 }

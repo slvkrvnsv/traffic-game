@@ -107,12 +107,34 @@ class TileManager extends Component {
     debugPrint('[TILE] initial: ${tile.tileType.name} @ ${tile.position}');
   }
 
-  void _assignPlayerToTile(TileBase tile) {
+  /// Assign the player to [tile]. On a hand-off ([matchLane] true) the player
+  /// may be in any of several parallel lanes, so pick the lane whose world
+  /// entry is nearest the player's current *lane centreline* — mirroring the
+  /// geometric match used for NPC seam continuity — otherwise lane 0 would snap
+  /// them over. The centreline (not the rendered position) is used so a
+  /// mid-lane-change lean doesn't bias the match and double-count the offset.
+  /// On bootstrap there is no meaningful position yet, so use the first
+  /// (default/seam) lane.
+  void _assignPlayerToTile(TileBase tile, {bool matchLane = false}) {
+    Spline lane = tile.playerPaths.first;
+    if (matchLane && tile.playerPaths.length > 1) {
+      final from = playerCar.splineCentrePosition;
+      double best = double.infinity;
+      for (final p in tile.playerPaths) {
+        final entry = tile.localToWorld(p.evaluate(0.0));
+        final d = entry.distanceTo(from);
+        if (d < best) {
+          best = d;
+          lane = p;
+        }
+      }
+    }
     playerCar.assignSpline(
-      tile.playerPaths.first,
+      lane,
       worldOffset: tile.position,
       worldAngle: tile.orientation,
     );
+    playerCar.setLaneOptions(tile.playerPaths, tile.position, tile.orientation);
   }
 
   // ---------------------------------------------------------------------------
@@ -180,7 +202,7 @@ class TileManager extends Component {
     // NPC continuity across the seam is handled continuously every frame by
     // _advanceNpcsAcrossSeams(), independent of the player's hand-off.
 
-    _assignPlayerToTile(newTile);
+    _assignPlayerToTile(newTile, matchLane: true);
 
     debugPrint('[TILE] handoff: ${oldTile.tileType.name} → ${newTile.tileType.name}'
         '  NPCs total=${_spawner.allNpcs.length}');
