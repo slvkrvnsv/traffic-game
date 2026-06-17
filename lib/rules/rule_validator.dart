@@ -52,6 +52,15 @@ class RuleValidator extends Component {
       _checkResult(scenario);
     }));
 
+    // An NPC reacting to a player cut-off is bubble-only feedback on most tiles;
+    // a graded merge routes it to its scenario, which fails only if the player
+    // was actually the merging car. Scenarios that don't override it ignore it.
+    _subs.add(GameBus.instance.on<DriverReactionEvent>().listen((_) {
+      final scenario = _activeScenario;
+      scenario?.onDriverReaction();
+      _checkResult(scenario);
+    }));
+
     // Blocking the road is a universal rule (already context-gated by the
     // detector), so it fails immediately and tile-independently like a crash.
     _subs.add(GameBus.instance.on<RoadBlockingEvent>().listen((_) {

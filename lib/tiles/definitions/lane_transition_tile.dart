@@ -1,12 +1,17 @@
+import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flame/components.dart';
 import '../../core/constants.dart';
+import '../../core/game_bus.dart';
 import '../../core/spline.dart';
+import '../../cars/npc_car.dart';
+import '../../cars/player_car.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
 import '../scenarios/scenario_base.dart';
 import '../scenarios/scenario_registry.dart';
 import '../scenarios/free_drive_scenario.dart';
+import '../scenarios/merge_scenario.dart';
 
 /// A lane-transition connector between the 2-lane straight and the 1-lane
 /// straight.
@@ -147,14 +152,130 @@ class LaneTransitionTile extends TileBase {
   @override
   bool get allowsLaneChange => merging;
 
+  // The "Merge left" task is announced dynamically by [updateNpcSensors] — only
+  // while the player is actually in the ending (right) lane — so there's no
+  // static label that would show even when they're already in the through lane.
   @override
-  String? get taskLabel => merging ? 'Merge left' : null;
+  String? get taskLabel => null;
 
   @override
   Vector2 get entryAnchor => Vector2(_playerInnerX, kTileSize);
 
   @override
   Vector2 get exitAnchor => Vector2(_playerInnerX, 0);
+
+  // ---------------------------------------------------------------------------
+  // Merge right-of-way + grading (merge tiles only)
+  //
+  // NPC half: a car on the ending (outer) lane gives way to through traffic
+  // (through NPCs *and* the player) where the lanes converge, treating a
+  // conflicting through vehicle as a virtual lead car so the gas/brake layer
+  // eases it in behind for a gap instead of barging across. It signals left the
+  // whole way over. Yield is gated to the taper region so a car running
+  // parallel to through traffic at the wide entry never freezes (the lanes are
+  // still fully separate there).
+  //
+  // Player half: passive, lane-scoped grading. The "Merge left" task and the
+  // cut-off fault only apply while the player is in the ending lane; in the
+  // through lane they have priority and nothing is tested ("just go").
+  // ---------------------------------------------------------------------------
+
+  /// NPC lane indices — npcPaths order is [oncoming, through, merge].
+  static const int _mergeLaneIndex = 2;
+  static const int _throughLaneIndex = 1;
+
+  /// A merging car may slot ahead of a through car only once it's at least this
+  /// far ahead (tile-local Y); otherwise it gives way and tucks in behind.
+  static const double _mergeLeadMargin = kCarLength;
+
+  bool _taskShown = false;
+  bool _playerEverMerged = false;
+  bool _mergeCleared = false;
+
+  @override
+  void updateNpcSensors(
+    double dt,
+    PlayerCar playerCar,
+    List<NpcCar> allNpcs,
+  ) {
+    super.updateNpcSensors(dt, playerCar, allNpcs); // ordinary lead-car gaps
+    if (!merging) return;
+
+    final mergeLane = playerPaths[1];
+    final throughLane = playerPaths.first;
+    final playerMerging = identical(playerCar.spline, mergeLane);
+    final playerOnThrough = identical(playerCar.spline, throughLane);
+    final playerY = worldToLocal(playerCar.position).y;
+
+    // Through-lane vehicles (tile-local Y, northbound) a merging car gives way
+    // to: through NPCs, plus the player when in the through lane.
+    final throughY = <double>[
+      for (final npc in npcs)
+        if (npc.laneIndex == _throughLaneIndex) worldToLocal(npc.position).y,
+      if (playerOnThrough) playerY,
+    ];
+
+    for (final npc in npcs) {
+      if (npc.laneIndex != _mergeLaneIndex) continue;
+      final myY = worldToLocal(npc.position).y;
+
+      // Signal left across the move (incl. an advance-warning lead-in before the
+      // taper), drop it once merged.
+      npc.brain.signalLeftForMerge =
+          myY > _taperEndY && myY <= _taperStartY + kIndicatorSignalDistance;
+
+      // Yield only where the lanes actually converge. Above [_taperStartY] the
+      // outer lane is fully its own (a car parallel to through traffic at the
+      // wide entry must NOT freeze); at/below [_taperEndY] it has merged and
+      // ordinary same-lane following (from super) takes over.
+      if (myY > _taperStartY || myY <= _taperEndY) continue;
+
+      double mergeGap = double.infinity;
+      for (final vY in throughY) {
+        final ahead = myY - vY; // >0 ⇒ through car is ahead (north) of us
+        if (ahead < -_mergeLeadMargin) continue; // we're clearly in front → go
+        final gap = (ahead - kCarLength).clamp(0.0, double.infinity);
+        if (gap < mergeGap) mergeGap = gap;
+      }
+      if (mergeGap.isFinite) {
+        final existing = npc.brain.leadCarDistance;
+        npc.brain.leadCarDistance =
+            existing == null ? mergeGap : math.min(existing, mergeGap);
+      }
+    }
+
+    // ---- Player grading (passive, lane-scoped) ----
+    // "Actively merging" = in the ending lane AND not yet past the pinch. The
+    // fault, the task and the auto-signal all key off this one condition, so a
+    // player who has already merged in (driving the last stretch of the tile in
+    // the single lane, still on the merge spline) can no longer be flagged for
+    // an "unsafe merge" — which otherwise read as a fault on a later tile.
+    final activelyMerging = playerMerging && playerY > _taperEndY;
+    final s = scenario;
+    if (s is MergeScenario) s.playerIsMerging = activelyMerging;
+    if (playerMerging) _playerEverMerged = true;
+
+    // Dynamic task: "Merge left" only while actively merging.
+    final wantTask = activelyMerging;
+    if (wantTask != _taskShown) {
+      _taskShown = wantTask;
+      GameBus.instance.emit(ManeuverAnnouncedEvent(
+          maneuver: null, label: wantTask ? 'Merge left' : null));
+    }
+    // Auto-signal left for the whole commanded merge — from the moment the task
+    // appears, not just when the lane bends (mirrors the NPC's signalLeftForMerge).
+    playerCar.forceLeftIndicator = wantTask;
+
+    // Pass: the player took the ending lane and merged in past the pinch without
+    // a fault (a cut-off would already have failed via onDriverReaction).
+    if (!_mergeCleared && _playerEverMerged && playerY <= _taperEndY) {
+      _mergeCleared = true;
+      s.onSafelyCleared();
+      if (s.result.status == ScenarioStatus.passed) {
+        GameBus.instance.emit(RulePassedEvent());
+      }
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Rendering
@@ -230,8 +351,11 @@ class LaneTransitionTile extends TileBase {
   }
 
   /// Lane line at the fixed [boundaryX] between a surviving inner lane and the
-  /// outer lane. An ENDING lane gets a dense dotted line running to the pinch
-  /// point plus merge arrows; a lane merely being added gets an ordinary dash.
+  /// outer lane. An ENDING lane's line **starts as an ordinary lane divider** at
+  /// the wide end (where it seams onto the 2-lane road) and *gradually* tightens
+  /// into the dense MUTCD lane-drop dots as the outer lane pinches away — so the
+  /// "yield / lane ending" reading builds up toward the merge point rather than
+  /// being on from the first metre. A lane merely being added gets a plain dash.
   /// The line is only drawn where the outer lane actually exists.
   void _drawLaneBoundary(Canvas canvas,
       {required double boundaryX,
@@ -241,10 +365,22 @@ class LaneTransitionTile extends TileBase {
     final paint = Paint()
       ..color = const Color(0xFFFFFFFF)
       ..strokeWidth = 3; // match the straight tiles' lane lines
-    final dash = ending ? 22.0 : 40.0; // dense dots for a lane drop
-    final gap = ending ? 14.0 : 40.0;
+    const normalDash = 40.0, normalGap = 40.0; // ordinary divider (2-lane road)
+    const denseDash = 22.0, denseGap = 14.0; // lane-drop warning dots
     double y = 0;
     while (y < kTileSize) {
+      // Density follows how much outer lane is left: full lane → normal dashes,
+      // half gone → already the dense dots (reaches full density by the taper
+      // mid-point, well before the pinch).
+      final double dash, gap;
+      if (ending) {
+        final f = ((1.0 - _openness(y)) / 0.5).clamp(0.0, 1.0);
+        dash = normalDash + (denseDash - normalDash) * f;
+        gap = normalGap + (denseGap - normalGap) * f;
+      } else {
+        dash = normalDash;
+        gap = normalGap;
+      }
       final yEnd = (y + dash).clamp(0.0, kTileSize);
       if (_openness((y + yEnd) / 2) > 0.04) {
         canvas.drawLine(Offset(boundaryX, y), Offset(boundaryX, yEnd), paint);

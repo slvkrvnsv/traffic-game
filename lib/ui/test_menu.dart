@@ -54,7 +54,7 @@ class TestMenuScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final entries = [
-      _TestEntry('Connectors — Merge & Extend', Icons.merge_rounded,
+      _TestEntry('Connectors', Icons.merge_rounded,
           {'testSequence': _connectorsCourse}),
       for (final type in TileRegistry.allTypes) ..._entriesFor(type),
     ];

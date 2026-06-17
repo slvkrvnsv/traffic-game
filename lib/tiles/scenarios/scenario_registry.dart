@@ -2,6 +2,7 @@ import 'dart:math';
 import 'scenario_base.dart';
 import 'free_drive_scenario.dart';
 import 'yield_scenario.dart';
+import 'merge_scenario.dart';
 import '../tile_registry.dart';
 
 /// Maps each [TileType] to the rule variants its geometry can be dressed
@@ -18,6 +19,11 @@ class ScenarioRegistry {
     TileType.intersection4way: [
       () => YieldScenario(),
       // Future: () => StopSignScenario(), () => TrafficLightScenario(),
+    ],
+    // 2→1 merge: graded only when the player is in the ending (right) lane —
+    // see MergeScenario. The extend tile (1→2) has nothing to grade.
+    TileType.laneMerge: [
+      () => MergeScenario(),
     ],
   };
 

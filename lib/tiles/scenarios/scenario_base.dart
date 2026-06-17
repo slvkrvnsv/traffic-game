@@ -32,6 +32,12 @@ abstract class ScenarioBase {
   void onRedLightViolation() {}
   void onPlayerPassedYieldLine(double speed) {}
 
+  /// Called when an NPC reacted to the player forcing it into a hard brake
+  /// (a cut-off). Most scenarios ignore it — the visible bubble is feedback
+  /// enough — but a graded merge treats it as a fault (when the player is the
+  /// one merging).
+  void onDriverReaction() {}
+
   /// Called by the tile once the player has cleared its conflict zone without
   /// a violation. Scenarios use this to report [ScenarioStatus.passed].
   void onSafelyCleared() {}

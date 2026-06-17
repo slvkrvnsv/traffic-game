@@ -57,10 +57,16 @@ void main() {
       }
     });
 
-    test('announces "Merge left"', () {
-      expect(tile.taskLabel, 'Merge left');
+    test('declares the laneMerge type with no commanded maneuver', () {
       expect(tile.commandedManeuver, isNull);
       expect(tile.tileType, TileType.laneMerge);
+    });
+
+    test('has no static task label — "Merge left" is announced dynamically '
+        'only while the player is in the ending lane', () {
+      // Lane-scoped: a player who stays in the through lane is never told to
+      // merge and is never graded (see merge_scenario_test.dart).
+      expect(tile.taskLabel, isNull);
     });
   });
 

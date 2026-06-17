@@ -286,6 +286,10 @@ class TileManager extends Component {
         // The continuation may bend (e.g. a turn through the next
         // intersection) — keep the indicator/turn-slow-down machinery honest.
         npc.brain.isTurning = TileBase.pathTurns(next.path);
+        // A merge is done once the car crosses the seam — drop the forced left
+        // signal so it doesn't carry onto the next tile (only the merge tile
+        // ever sets it, so nothing would otherwise clear it).
+        npc.brain.signalLeftForMerge = false;
         tile.npcs.remove(npc);
         next.tile.npcs.add(npc);
         continue;

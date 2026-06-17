@@ -44,6 +44,12 @@ class PlayerCar extends CarBase {
   double _laneTileAngle = 0.0;
   bool _laneChangeAllowed = true;
 
+  /// Set by the merge tile while the player is in the ending lane with the
+  /// "Merge left" task active: forces the left indicator on (the curvature-based
+  /// auto-indicator wouldn't fire until the lane visibly bends). Cleared by the
+  /// tile once merged / out of the lane.
+  bool forceLeftIndicator = false;
+
   /// Record the parallel travel lanes available on the player's current tile,
   /// plus that tile's world placement, so a swipe can switch between them.
   /// [allowLaneChange] is the tile's own verdict (single-lane maneuver tiles
@@ -251,6 +257,13 @@ class PlayerCar extends CarBase {
     final s = spline;
     if (s == null || hasReachedEnd) {
       setLeftIndicator(false);
+      setRightIndicator(false);
+      return;
+    }
+    // A commanded merge signals left from the moment the task appears (while in
+    // the ending lane), before the lane has visibly bent.
+    if (forceLeftIndicator) {
+      setLeftIndicator(true);
       setRightIndicator(false);
       return;
     }

@@ -29,6 +29,12 @@ class NpcBrain {
   double distanceToTurnSignal = double.infinity;
   bool isTurning = false;
 
+  /// Set by the merge tile while this NPC is on the ending lane and still
+  /// moving over: forces the left indicator on (the curvature-based indicator
+  /// logic doesn't fire while the car waits *before* the taper, with no bend
+  /// yet in range). Cleared once merged.
+  bool signalLeftForMerge = false;
+
   /// Distance to a mandatory stop point (e.g. a stop line) the NPC must halt
   /// at. Set by the tile each frame; null when there is nothing to stop for.
   double? stopTargetDistance;
@@ -190,6 +196,13 @@ class NpcBrain {
     final s = car.spline;
     if (s == null || car.hasReachedEnd) {
       car.setLeftIndicator(false);
+      car.setRightIndicator(false);
+      return;
+    }
+    // A merge in progress signals left the whole way over, even while waiting
+    // for a gap before the lane actually bends.
+    if (signalLeftForMerge) {
+      car.setLeftIndicator(true);
       car.setRightIndicator(false);
       return;
     }
