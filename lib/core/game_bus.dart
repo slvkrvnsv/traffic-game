@@ -73,9 +73,13 @@ class PlayerHandOffEvent extends GameEvent {}
 
 /// The exam instruction for the tile the player just entered.
 /// [maneuver] is null on tiles with no instruction (plain road) — HUD hides.
+/// [label] overrides the maneuver's text for instructions that aren't one of
+/// the intersection maneuvers (e.g. "Merge left" on a lane-transition tile);
+/// null falls back to [maneuver].label.
 class ManeuverAnnouncedEvent extends GameEvent {
-  ManeuverAnnouncedEvent({required this.maneuver});
+  ManeuverAnnouncedEvent({required this.maneuver, this.label});
   final Maneuver? maneuver;
+  final String? label;
 }
 
 // ---------------------------------------------------------------------------

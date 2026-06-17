@@ -2,44 +2,60 @@ import 'package:flutter/material.dart';
 import '../core/maneuver.dart';
 import '../tiles/tile_registry.dart';
 
-/// One launchable test-mode entry: a tile type, optionally with a pinned
-/// maneuver (intersections get one entry per maneuver plus random).
+/// One launchable test-mode entry: a label + icon and the `/game` route
+/// arguments it launches with (a single looped tile, or a sequenced course).
 class _TestEntry {
-  const _TestEntry(this.label, this.icon, this.type, [this.maneuver]);
+  const _TestEntry(this.label, this.icon, this.arguments);
 
   final String label;
   final IconData icon;
-  final TileType type;
-  final Maneuver? maneuver;
+  final Map<String, dynamic> arguments;
 }
 
 /// Test mode: select a tile type (and maneuver) to loop endlessly.
 class TestMenuScreen extends StatelessWidget {
   const TestMenuScreen({super.key});
 
+  /// A looped tile-type entry (optionally with a pinned maneuver).
+  static _TestEntry _tile(String label, IconData icon, TileType type,
+          [Maneuver? maneuver]) =>
+      _TestEntry(label, icon,
+          {'testMode': type, 'testManeuver': maneuver});
+
+  /// The lane-transition course: 2-lane → merge (2→1) → 1-lane → extend (1→2),
+  /// looped. Exercises both connectors and both straights in sequence.
+  static const _connectorsCourse = [
+    TileType.straight,
+    TileType.laneMerge,
+    TileType.straight1Lane,
+    TileType.laneExtend,
+  ];
+
   static List<_TestEntry> _entriesFor(TileType type) => switch (type) {
-        TileType.straight => const [
-            _TestEntry('Straight Road', Icons.straight_rounded,
-                TileType.straight),
+        TileType.straight => [
+            _tile('Straight Road', Icons.straight_rounded, TileType.straight),
           ],
-        TileType.intersection4way => const [
-            _TestEntry('4-Way Yield — Random', Icons.shuffle_rounded,
+        TileType.intersection4way => [
+            _tile('4-Way Yield — Random', Icons.shuffle_rounded,
                 TileType.intersection4way),
-            _TestEntry('4-Way Yield — Straight', Icons.straight_rounded,
+            _tile('4-Way Yield — Straight', Icons.straight_rounded,
                 TileType.intersection4way, Maneuver.straight),
-            _TestEntry('4-Way Yield — Turn Left', Icons.turn_left_rounded,
+            _tile('4-Way Yield — Turn Left', Icons.turn_left_rounded,
                 TileType.intersection4way, Maneuver.left),
-            _TestEntry('4-Way Yield — Turn Right', Icons.turn_right_rounded,
+            _tile('4-Way Yield — Turn Right', Icons.turn_right_rounded,
                 TileType.intersection4way, Maneuver.right),
           ],
-        // The start tile is never registered, so it never reaches here; the
-        // wildcard keeps this switch exhaustive over TileType.
+        // straight1Lane / laneMerge / laneExtend are only meaningful chained in
+        // the Connectors course (alone they'd seam a 1-lane end onto a 2-lane
+        // start). The wildcard keeps this switch exhaustive over TileType.
         _ => const <_TestEntry>[],
       };
 
   @override
   Widget build(BuildContext context) {
     final entries = [
+      _TestEntry('Connectors — Merge & Extend', Icons.merge_rounded,
+          {'testSequence': _connectorsCourse}),
       for (final type in TileRegistry.allTypes) ..._entriesFor(type),
     ];
 
@@ -73,10 +89,7 @@ class TestMenuScreen extends StatelessWidget {
                   onTap: () => Navigator.pushNamed(
                     context,
                     '/game',
-                    arguments: {
-                      'testMode': entry.type,
-                      'testManeuver': entry.maneuver,
-                    },
+                    arguments: entry.arguments,
                   ),
                 );
               },

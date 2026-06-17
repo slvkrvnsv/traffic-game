@@ -11,13 +11,16 @@ import 'world/game_world.dart';
 
 /// Root Flame game.
 class TrafficGame extends FlameGame {
-  TrafficGame({this.testMode, this.testManeuver});
+  TrafficGame({this.testMode, this.testManeuver, this.testSequence});
 
   /// If set, loop this tile type in test mode.
   final TileType? testMode;
 
   /// If set, pin the commanded maneuver on every tile (test mode).
   final Maneuver? testManeuver;
+
+  /// If set, loop this ordered sequence of tile types (test mode course).
+  final List<TileType>? testSequence;
 
   late final GameWorld _world;
   late final CameraController _cameraController;
@@ -33,7 +36,10 @@ class TrafficGame extends FlameGame {
     // Tiles are registered once at app startup in main.dart.
 
     // Build world + camera
-    _world = GameWorld(testMode: testMode, testManeuver: testManeuver);
+    _world = GameWorld(
+        testMode: testMode,
+        testManeuver: testManeuver,
+        testSequence: testSequence);
 
     final camera = CameraComponent(world: _world)
       ..viewfinder.zoom = kCameraZoom

@@ -58,6 +58,10 @@ abstract class TileBase extends PositionComponent {
   /// has nothing to announce (plain road). Shown by the maneuver HUD.
   Maneuver? get commandedManeuver => null;
 
+  /// HUD instruction text for tiles whose task isn't an intersection maneuver
+  /// (e.g. "Merge left"). Null → the HUD uses [commandedManeuver]'s label.
+  String? get taskLabel => null;
+
   double get handOffTriggerT => kHandOffTriggerT;
 
   final List<NpcCar> npcs = [];

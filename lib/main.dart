@@ -6,6 +6,8 @@ import 'input/hud_controls.dart';
 import 'rules/exam_error_log.dart';
 import 'tiles/tile_registry.dart';
 import 'tiles/definitions/straight_tile.dart';
+import 'tiles/definitions/straight_one_lane_tile.dart';
+import 'tiles/definitions/lane_transition_tile.dart';
 import 'tiles/definitions/intersection_tile.dart';
 import 'traffic_game.dart';
 import 'ui/game_over_overlay.dart';
@@ -22,6 +24,8 @@ Future<void> main() async {
   // Register all tile types once at startup so TestMenuScreen can list them
   // before any TrafficGame instance is created.
   StraightTile.register();
+  StraightOneLaneTile.register();
+  LaneTransitionTile.register();
   IntersectionTile.register();
 
   // Restore the persisted exam-error history (fault sheet).
@@ -54,10 +58,12 @@ class TrafficApp extends StatelessWidget {
             final args = settings.arguments as Map<String, dynamic>?;
             final testMode = args?['testMode'] as TileType?;
             final testManeuver = args?['testManeuver'] as Maneuver?;
+            final testSequence = args?['testSequence'] as List<TileType>?;
             return MaterialPageRoute(
               builder: (_) => GameScreen(
                 testMode: testMode,
                 testManeuver: testManeuver,
+                testSequence: testSequence,
               ),
             );
           default:
@@ -72,10 +78,12 @@ class TrafficApp extends StatelessWidget {
 
 /// The game screen: Flame GameWidget + Flutter HUD overlay.
 class GameScreen extends StatefulWidget {
-  const GameScreen({super.key, this.testMode, this.testManeuver});
+  const GameScreen(
+      {super.key, this.testMode, this.testManeuver, this.testSequence});
 
   final TileType? testMode;
   final Maneuver? testManeuver;
+  final List<TileType>? testSequence;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -87,6 +95,7 @@ class _GameScreenState extends State<GameScreen> {
   TrafficGame _buildGame() => TrafficGame(
         testMode: widget.testMode,
         testManeuver: widget.testManeuver,
+        testSequence: widget.testSequence,
       );
 
   @override

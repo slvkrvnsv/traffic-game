@@ -15,10 +15,11 @@ import '../tiles/tile_registry.dart';
 /// instance-scoped to this world, so a restart — which builds a fresh
 /// [GameWorld] — starts from a clean slate with no manual clearing.
 class GameWorld extends World {
-  GameWorld({this.testMode, this.testManeuver});
+  GameWorld({this.testMode, this.testManeuver, this.testSequence});
 
   final TileType? testMode;
   final Maneuver? testManeuver;
+  final List<TileType>? testSequence;
 
   late final PlayerCar playerCar;
   late final TileManager tileManager;
@@ -40,6 +41,7 @@ class GameWorld extends World {
       world: this,
       testMode: testMode,
       testManeuver: testManeuver,
+      testSequence: testSequence,
     );
     add(tileManager);
 

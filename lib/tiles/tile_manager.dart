@@ -25,6 +25,7 @@ class TileManager extends Component {
     required this.world,
     this.testMode,
     this.testManeuver,
+    this.testSequence,
     Random? rng,
   }) : _rng = rng ?? Random();
 
@@ -36,6 +37,19 @@ class TileManager extends Component {
 
   /// If set, pin the commanded maneuver on every spawned tile (test mode).
   final Maneuver? testManeuver;
+
+  /// If set, cycle this ordered list of tile types (test-mode course), starting
+  /// with the first as the opening tile. Takes precedence over [testMode].
+  final List<TileType>? testSequence;
+
+  /// Next index into [testSequence]; advanced once per spawned tile.
+  int _seqIndex = 0;
+
+  bool get _isSequenced => testSequence != null && testSequence!.isNotEmpty;
+
+  /// The next tile type from [testSequence], advancing (and wrapping) the index.
+  TileType _nextSequencedType() =>
+      testSequence![_seqIndex++ % testSequence!.length];
 
   final Random _rng;
   final NpcSpawner _spawner = NpcSpawner();
@@ -88,14 +102,18 @@ class TileManager extends Component {
 
   void _activateTile(TileBase tile) {
     tile.onActivate();
-    GameBus.instance
-        .emit(ManeuverAnnouncedEvent(maneuver: tile.commandedManeuver));
+    GameBus.instance.emit(ManeuverAnnouncedEvent(
+      maneuver: tile.commandedManeuver,
+      label: tile.taskLabel,
+    ));
   }
 
   void _spawnInitialTile() {
-    // Normal play opens in the driving-school parking lot; test mode loops the
-    // chosen tile from the start instead.
-    final tile = testMode != null ? _createTile(testMode!) : StartTile();
+    // Normal play opens in the driving-school parking lot; test mode opens on
+    // the chosen tile (or the first tile of a sequenced course) instead.
+    final tile = _isSequenced
+        ? _createTile(_nextSequencedType())
+        : (testMode != null ? _createTile(testMode!) : StartTile());
     // First tile: canonical orientation, entry anchor at the world origin.
     tile.place(
       worldPosition: -tile.entryAnchor,
@@ -347,13 +365,18 @@ class TileManager extends Component {
     TileBase tile = _createTile(_pickNextTileType());
     TilePlacement placement = TileConnector.computeNextPlacement(prevTile, tile);
 
-    final liveTiles = [..._activeTiles, ..._trailingTiles];
-    for (int attempt = 0;
-        attempt < _placementRetries &&
-            TileConnector.overlapsAny(placement, liveTiles);
-        attempt++) {
-      tile = _createTile(_pickNextTileType());
-      placement = TileConnector.computeNextPlacement(prevTile, tile);
+    // A sequenced course is a fixed ordered list — re-rolling a tile to dodge an
+    // overlap would both break the order and advance the sequence index twice.
+    // Sequenced tiles are straight (exit faces north), so they never overlap.
+    if (!_isSequenced) {
+      final liveTiles = [..._activeTiles, ..._trailingTiles];
+      for (int attempt = 0;
+          attempt < _placementRetries &&
+              TileConnector.overlapsAny(placement, liveTiles);
+          attempt++) {
+        tile = _createTile(_pickNextTileType());
+        placement = TileConnector.computeNextPlacement(prevTile, tile);
+      }
     }
 
     tile.place(
@@ -413,6 +436,7 @@ class TileManager extends Component {
   }
 
   TileType _pickNextTileType() {
+    if (_isSequenced) return _nextSequencedType();
     if (testMode != null) return testMode!;
     final types = TileRegistry.allTypes;
     return types[_rng.nextInt(types.length)];

@@ -132,8 +132,26 @@ class PlayerCar extends CarBase {
     _heading += (target - _heading).clamp(-maxStep, maxStep);
     final yawRate = dt > 0 ? (_heading - headingBefore) / dt : 0.0;
 
-    // 3. Lateral movement is purely a consequence of pointing off-axis.
-    lateralOffset += speed * math.sin(_heading) * dt;
+    // 3. Lateral movement is purely a consequence of pointing off-axis. While
+    //    self-centring (finger released, or any no-steer tile) the nose can lag
+    //    on the old steer side for a moment; clamp the step so it may only ever
+    //    move TOWARD the lane, never away. That makes the return strictly
+    //    monotonic, so the car glues onto its spline the instant steering goes
+    //    away — e.g. handing off from the merge tile to the straight road — with
+    //    no drift-out-then-correct wobble.
+    final lateralStep = speed * math.sin(_heading) * dt;
+    if (steerActive) {
+      lateralOffset += lateralStep;
+    } else {
+      final next = lateralOffset + lateralStep;
+      if (next.abs() <= lateralOffset.abs()) {
+        lateralOffset = next; // converging toward the lane — apply
+      } else if (next.sign != lateralOffset.sign) {
+        lateralOffset = 0.0; // overshot the centreline — settle on it
+      }
+      // else: same side and growing (a stale nose angle) — hold this frame and
+      // let the nose straighten first, rather than drifting off-lane.
+    }
 
     // Settle exactly once centred and straight (released only).
     if (!steerActive &&

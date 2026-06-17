@@ -21,6 +21,7 @@ class _ManeuverHudState extends State<ManeuverHud> {
   };
 
   Maneuver? _maneuver;
+  String? _label;
   bool _showPassed = false;
 
   late final StreamSubscription<ManeuverAnnouncedEvent> _maneuverSub;
@@ -31,7 +32,10 @@ class _ManeuverHudState extends State<ManeuverHud> {
   void initState() {
     super.initState();
     _maneuverSub = GameBus.instance.on<ManeuverAnnouncedEvent>().listen((e) {
-      setState(() => _maneuver = e.maneuver);
+      setState(() {
+        _maneuver = e.maneuver;
+        _label = e.label;
+      });
     });
     _passedSub = GameBus.instance.on<RulePassedEvent>().listen((_) {
       setState(() => _showPassed = true);
@@ -52,11 +56,14 @@ class _ManeuverHudState extends State<ManeuverHud> {
 
   @override
   Widget build(BuildContext context) {
-    final visible = _maneuver != null || _showPassed;
+    final visible = _maneuver != null || _label != null || _showPassed;
     final icon = _showPassed
         ? Icons.check_circle_rounded
-        : (_maneuver != null ? _icons[_maneuver] : Icons.straight_rounded);
-    final label = _showPassed ? 'Well done!' : (_maneuver?.label ?? '');
+        : (_maneuver != null
+            ? _icons[_maneuver]
+            : (_label != null ? Icons.merge_rounded : Icons.straight_rounded));
+    final label =
+        _showPassed ? 'Well done!' : (_label ?? _maneuver?.label ?? '');
     final accent =
         _showPassed ? const Color(0xFF4CAF50) : const Color(0xFF42A5F5);
 
