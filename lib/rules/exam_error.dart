@@ -7,8 +7,25 @@ enum ExamErrorType {
   stopSignViolation,
   redLightViolation,
   roadBlocking,
+
+  /// A scenario task failed but isn't one of the specific rules above — e.g. an
+  /// unsafe merge. The human-readable reason rides in [ExamError.detail].
+  scenarioFault,
+
+  /// An NPC threw the "!" warning because the player forced them to brake hard
+  /// (a cut-off). Unsafe-driving, not a failed task.
+  cutOff,
+
   collision,
 }
+
+/// Which fault log an [ExamErrorType] belongs to.
+///
+/// The fail model splits non-crash mistakes into two streams the user reviews
+/// separately: failed exam *tasks* (feeds the "how you should've done it"
+/// explainer) and *unsafe* driving (the NPC "!" reactions). A crash is its own
+/// terminal thing — the only game-over.
+enum ExamErrorCategory { fault, unsafe, crash }
 
 extension ExamErrorTypeLabel on ExamErrorType {
   String get label => switch (this) {
@@ -16,7 +33,20 @@ extension ExamErrorTypeLabel on ExamErrorType {
         ExamErrorType.stopSignViolation => 'Missed a stop sign',
         ExamErrorType.redLightViolation => 'Ran a red light',
         ExamErrorType.roadBlocking => 'Blocked the road',
+        ExamErrorType.scenarioFault => 'Failed the maneuver',
+        ExamErrorType.cutOff => 'Cut off a driver',
         ExamErrorType.collision => 'Collision',
+      };
+
+  ExamErrorCategory get category => switch (this) {
+        ExamErrorType.failedToYield ||
+        ExamErrorType.stopSignViolation ||
+        ExamErrorType.redLightViolation ||
+        ExamErrorType.roadBlocking ||
+        ExamErrorType.scenarioFault =>
+          ExamErrorCategory.fault,
+        ExamErrorType.cutOff => ExamErrorCategory.unsafe,
+        ExamErrorType.collision => ExamErrorCategory.crash,
       };
 }
 

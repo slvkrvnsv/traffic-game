@@ -1,5 +1,6 @@
 import 'dart:async';
 import '../feedback/driver_reaction.dart';
+import '../rules/exam_error.dart';
 import 'maneuver.dart';
 
 // ---------------------------------------------------------------------------
@@ -45,6 +46,22 @@ class DriverReactionEvent extends GameEvent {
   final DriverReaction reaction;
   final double worldX;
   final double worldY;
+}
+
+/// A scenario task — the rule the player had to obey on the active tile —
+/// was failed. Non-fatal: it's recorded as a fault for later review, never a
+/// game-over (only a crash ends the run). Emitted once per scenario instance
+/// on the failing edge by [RuleValidator], which owns the context-aware grading.
+///
+/// [kind] is the specific rule when the originating event names it
+/// (yield/stop/red); null for scenario-specific faults (e.g. an unsafe merge),
+/// which carry only the [reason] string. [speed] is the player speed at the
+/// fault when relevant (e.g. crossing a yield line).
+class ScenarioTaskFailedEvent extends GameEvent {
+  ScenarioTaskFailedEvent({required this.reason, this.kind, this.speed});
+  final String reason;
+  final ExamErrorType? kind;
+  final double? speed;
 }
 
 /// Positive confirmation — player correctly stopped / yielded.

@@ -2,19 +2,29 @@ import 'dart:async';
 import 'package:flame/components.dart';
 import '../core/game_bus.dart';
 import '../tiles/scenarios/scenario_base.dart';
+import 'exam_error.dart';
 
 /// Bridges [GameBus] rule events to the *currently active* tile's
 /// [ScenarioBase]. Each tile owns the rule the player must obey there
 /// (e.g. a 4-way intersection uses YieldScenario), so violations are always
 /// evaluated against the scenario for the tile the player is actually on.
 ///
-/// When a scenario reports failure, this emits [GameOverEvent].
+/// The fail model is deliberately narrow: **only a crash ends the run**
+/// ([CollisionEvent] → [GameOverEvent]). Every other mistake is non-fatal — a
+/// failed scenario task becomes a [ScenarioTaskFailedEvent] (recorded for the
+/// "how you should've done it" review), and road-blocking / NPC reactions are
+/// logged elsewhere. This component never game-overs on a rule break.
 ///
 /// A [Component] so its bus subscriptions live and die with the [GameWorld]
 /// that owns it — restarting the game can never stack up stale listeners.
 class RuleValidator extends Component {
   /// Supplies the scenario for the player's current tile. Bound by GameWorld.
   ScenarioBase? Function()? _scenarioSource;
+
+  /// The scenario instance we last emitted a failure for. Each tile owns its
+  /// own scenario instance, so identity comparison edge-detects the failure —
+  /// further events after a scenario has failed don't re-record it.
+  ScenarioBase? _lastFailed;
 
   final List<StreamSubscription<GameEvent>> _subs = [];
 
@@ -39,35 +49,33 @@ class RuleValidator extends Component {
     _subs.add(GameBus.instance.on<YieldViolationEvent>().listen((e) {
       final scenario = _activeScenario;
       scenario?.onYieldViolation(e.speedAtLine);
-      _checkResult(scenario);
+      _checkResult(scenario,
+          kind: ExamErrorType.failedToYield, speed: e.speedAtLine);
     }));
     _subs.add(GameBus.instance.on<StopSignViolationEvent>().listen((e) {
       final scenario = _activeScenario;
       scenario?.onStopSignViolation(e.minSpeedObserved);
-      _checkResult(scenario);
+      _checkResult(scenario,
+          kind: ExamErrorType.stopSignViolation, speed: e.minSpeedObserved);
     }));
     _subs.add(GameBus.instance.on<RedLightViolationEvent>().listen((_) {
       final scenario = _activeScenario;
       scenario?.onRedLightViolation();
-      _checkResult(scenario);
+      _checkResult(scenario, kind: ExamErrorType.redLightViolation);
     }));
 
     // An NPC reacting to a player cut-off is bubble-only feedback on most tiles;
     // a graded merge routes it to its scenario, which fails only if the player
-    // was actually the merging car. Scenarios that don't override it ignore it.
+    // was actually the merging car. The cut-off itself is logged as unsafe
+    // driving by the recorder; here it can additionally fail the merge *task*.
     _subs.add(GameBus.instance.on<DriverReactionEvent>().listen((_) {
       final scenario = _activeScenario;
       scenario?.onDriverReaction();
       _checkResult(scenario);
     }));
 
-    // Blocking the road is a universal rule (already context-gated by the
-    // detector), so it fails immediately and tile-independently like a crash.
-    _subs.add(GameBus.instance.on<RoadBlockingEvent>().listen((_) {
-      GameBus.instance.emit(GameOverEvent(
-        reason: 'You blocked the road — keep moving when the way is clear.',
-      ));
-    }));
+    // Road-blocking is no longer fatal — the recorder logs it as a fault. (It
+    // stays context-gated by the detector, so it only fires on a real block.)
   }
 
   @override
@@ -79,10 +87,19 @@ class RuleValidator extends Component {
     super.onRemove();
   }
 
-  void _checkResult(ScenarioBase? scenario) {
-    final result = scenario?.result;
-    if (result?.status == ScenarioStatus.failed) {
-      GameBus.instance.emit(GameOverEvent(reason: result!.reason ?? 'Game over'));
-    }
+  /// Emit a [ScenarioTaskFailedEvent] the first time [scenario] reaches the
+  /// failed state — never a game-over (only a crash does that). Edge-detected
+  /// by scenario identity so post-failure events don't double-record.
+  void _checkResult(ScenarioBase? scenario,
+      {ExamErrorType? kind, double? speed}) {
+    if (scenario == null) return;
+    if (scenario.result.status != ScenarioStatus.failed) return;
+    if (identical(scenario, _lastFailed)) return;
+    _lastFailed = scenario;
+    GameBus.instance.emit(ScenarioTaskFailedEvent(
+      reason: scenario.result.reason ?? 'Failed the maneuver',
+      kind: kind,
+      speed: speed,
+    ));
   }
 }

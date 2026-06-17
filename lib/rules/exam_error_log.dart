@@ -33,6 +33,17 @@ class ExamErrorLog {
   List<ExamError> get currentRunErrors =>
       _all.where((e) => e.runId == _currentRunId).toList();
 
+  /// This run's failed scenario tasks — the stream the "how you should've done
+  /// it" review reads from (yield/stop/red/road-block/unsafe-merge).
+  List<ExamError> get currentRunFaults => currentRunErrors
+      .where((e) => e.type.category == ExamErrorCategory.fault)
+      .toList();
+
+  /// This run's unsafe-driving events — the NPC "!" reactions (cut-offs).
+  List<ExamError> get currentRunUnsafe => currentRunErrors
+      .where((e) => e.type.category == ExamErrorCategory.unsafe)
+      .toList();
+
   String get currentRunId => _currentRunId;
 
   /// Begin a new run (called when a fresh GameWorld boots). Errors recorded

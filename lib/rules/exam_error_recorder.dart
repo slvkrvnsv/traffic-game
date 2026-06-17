@@ -9,8 +9,10 @@ import 'exam_error_log.dart';
 /// [ExamError] with context (tile, commanded maneuver, speed).
 ///
 /// Purely observational: it never affects the fail model — game-over flow is
-/// owned by RuleValidator. This is the data layer a future scoring / lives /
-/// exam-results feature will read from.
+/// owned by RuleValidator. It is the data layer behind the two non-crash fault
+/// streams the player reviews separately: failed scenario *tasks*
+/// ([ScenarioTaskFailedEvent] + road-blocking) and *unsafe* driving (the NPC
+/// "!" reactions). A crash is recorded too, as the terminal event.
 class ExamErrorRecorder extends Component {
   ExamErrorRecorder({required this.tileManager, ExamErrorLog? log})
       : _log = log ?? ExamErrorLog.instance;
@@ -25,15 +27,20 @@ class ExamErrorRecorder extends Component {
     super.onMount();
     _log.startRun();
 
-    _subs.add(GameBus.instance.on<YieldViolationEvent>().listen(
-        (e) => _record(ExamErrorType.failedToYield, speed: e.speedAtLine)));
-    _subs.add(GameBus.instance.on<StopSignViolationEvent>().listen((e) =>
-        _record(ExamErrorType.stopSignViolation, speed: e.minSpeedObserved)));
-    _subs.add(GameBus.instance.on<RedLightViolationEvent>().listen(
-        (_) => _record(ExamErrorType.redLightViolation)));
+    // Failed scenario tasks — RuleValidator does the context-aware grading and
+    // names the rule when it can; we record its verdict (kind + reason).
+    _subs.add(GameBus.instance.on<ScenarioTaskFailedEvent>().listen((e) =>
+        _record(e.kind ?? ExamErrorType.scenarioFault,
+            speed: e.speed, detail: e.reason)));
     _subs.add(GameBus.instance.on<RoadBlockingEvent>().listen((e) => _record(
         ExamErrorType.roadBlocking,
         detail: 'stood still ${e.duration.toStringAsFixed(1)}s')));
+
+    // Unsafe driving — an NPC threw the "!" because the player forced a hard
+    // brake (cut-off). Logged independently of any scenario verdict.
+    _subs.add(GameBus.instance.on<DriverReactionEvent>().listen(
+        (e) => _record(ExamErrorType.cutOff, detail: e.reaction.name)));
+
     _subs.add(GameBus.instance.on<CollisionEvent>().listen(
         (e) => _record(ExamErrorType.collision, detail: e.otherType)));
   }
