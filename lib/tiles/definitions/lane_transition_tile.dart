@@ -103,6 +103,12 @@ class LaneTransitionTile extends TileBase {
   /// Centre x of the outer/merging lane at tile-local [y]: 640 (merged) → 720.
   double _outerLaneX(double y) => _playerInnerX + _openness(y) * kLaneWidth;
 
+  /// Centre x of the ONCOMING outer lane — the mirror of [_outerLaneX] about the
+  /// centreline (560 merged → 480 wide). So oncoming traffic sees the opposite
+  /// transition: a merge tile WIDENS for oncoming, a widen tile NARROWS.
+  double _oncomingOuterX(double y) =>
+      _oncomingInnerX - _openness(y) * kLaneWidth;
+
   /// Half road-width at [y]: one lane (kLaneWidth) merged → two (kLaneWidth*2).
   double _roadHalfAt(double y) => kLaneWidth * (1 + _openness(y));
 
@@ -136,6 +142,20 @@ class LaneTransitionTile extends TileBase {
     ]);
   }
 
+  /// The oncoming outer lane — the mirror of [_mergeLane] about the centreline,
+  /// travelling top → bottom like [_oncoming]. Lets oncoming traffic use both
+  /// lanes where the road is wide (the markings already mirror it).
+  Spline _oncomingOuterLane() {
+    const n = 24;
+    return Spline([
+      for (int i = 0; i <= n; i++)
+        () {
+          final y = kTileSize * (i / n); // top (0) → bottom (1200)
+          return Vector2(_oncomingOuterX(y), y);
+        }(),
+    ]);
+  }
+
   // Both configs carry the through lane plus the tapered outer lane; [_mergeLane]
   // adapts its direction via [_openness] — on a merge the outer lane merges in
   // (720→640), on a widen it diverges out (640→720) as the new lane opens.
@@ -144,29 +164,37 @@ class LaneTransitionTile extends TileBase {
   @override
   late final List<Spline> playerPaths = [_through(), _mergeLane()];
 
-  // NPC lane splines as fields so [npcPaths] and [npcLanes] share identity.
-  late final Spline _npcOncoming = _oncoming();
+  // NPC lane splines as fields so [npcPaths] and [npcLanes] share identity. The
+  // outer lanes mirror each other about the centreline, so oncoming traffic gets
+  // the opposite transition for free.
+  late final Spline _npcOncomingInner = _oncoming();
+  late final Spline _npcOncomingOuter = _oncomingOuterLane();
   late final Spline _npcThrough = _through();
   late final Spline _npcOuter = _mergeLane();
 
   @override
-  late final List<Spline> npcPaths = [_npcOncoming, _npcThrough, _npcOuter];
+  late final List<Spline> npcPaths =
+      [_npcOncomingInner, _npcOncomingOuter, _npcThrough, _npcOuter];
 
+  // Group the two lanes that are COINCIDENT at their spawn entry (so the spawner
+  // picks one at random instead of dropping two overlapping cars); keep the
+  // separated pair as distinct spawn lanes. On each tile exactly one direction
+  // is coincident at entry — the side whose outer lane is opening from there.
   @override
   late final List<List<Spline>> npcLanes = merging
-      // Merge: the outer lane is its own spawn point (cars start in it and merge
-      // in), so one lane per path — keeps laneIndex oncoming=0/through=1/merge=2
-      // for the merge-yield in updateNpcSensors.
+      // Merge: oncoming WIDENS (its lanes coincide at the top entry) → group it.
+      // Player side is separated at its (bottom) entry → distinct lanes.
       ? [
-          [_npcOncoming],
+          [_npcOncomingInner, _npcOncomingOuter],
           [_npcThrough],
           [_npcOuter],
         ]
-      // Widen: the new lane opens FROM the entry, so each car arriving in the
-      // inner lane independently rolls "keep straight" vs "take the new lane" —
-      // one entry lane offering both movements (per-car choice, like a junction).
+      // Widen: player side opens from its (bottom) entry → grouped (per-car
+      // straight/diverge). Oncoming NARROWS (separated at the top entry) → its
+      // outer lane is distinct and yields into the inner (see updateNpcSensors).
       : [
-          [_npcOncoming],
+          [_npcOncomingInner],
+          [_npcOncomingOuter],
           [_npcThrough, _npcOuter],
         ];
 
@@ -225,12 +253,8 @@ class LaneTransitionTile extends TileBase {
   // through lane they have priority and nothing is tested ("just go").
   // ---------------------------------------------------------------------------
 
-  /// NPC lane indices — npcPaths order is [oncoming, through, merge].
-  static const int _mergeLaneIndex = 2;
-  static const int _throughLaneIndex = 1;
-
-  /// A merging car may slot ahead of a through car only once it's at least this
-  /// far ahead (tile-local Y); otherwise it gives way and tucks in behind.
+  /// A converging car may slot ahead of a surviving-lane car only once it's at
+  /// least this far ahead (tile-local Y); otherwise it gives way and tucks in.
   static const double _mergeLeadMargin = kCarLength;
 
   bool _taskShown = false;
@@ -244,75 +268,103 @@ class LaneTransitionTile extends TileBase {
     List<NpcCar> allNpcs,
   ) {
     super.updateNpcSensors(dt, playerCar, allNpcs); // ordinary lead-car gaps
-    if (!merging) return;
 
-    final mergeLane = playerPaths[1];
-    final throughLane = playerPaths.first;
-    final playerMerging = identical(playerCar.spline, mergeLane);
-    final playerOnThrough = identical(playerCar.spline, throughLane);
-    final playerY = worldToLocal(playerCar.position).y;
+    if (merging) {
+      // Player-direction merge (north): the ending outer lane gives way to
+      // through traffic (through NPCs AND the player) and its cars signal left.
+      final playerOnThrough = identical(playerCar.spline, playerPaths.first);
+      _applyConvergenceYield(
+        _npcOuter,
+        _npcThrough,
+        northbound: true,
+        signal: true,
+        extraSurvivingY:
+            playerOnThrough ? [worldToLocal(playerCar.position).y] : const [],
+      );
+      _updatePlayerMergeGrading(playerCar);
+    } else {
+      // Widen: the oncoming side is the mirror — its outer lane NARROWS, so the
+      // SAME yield keeps oncoming cars from phasing through each other as they
+      // converge. NPC-only by design: no player, no grading, no sign/signal.
+      _applyConvergenceYield(
+        _npcOncomingOuter,
+        _npcOncomingInner,
+        northbound: false,
+        signal: false,
+      );
+    }
+  }
 
-    // Through-lane vehicles (tile-local Y, northbound) a merging car gives way
-    // to: through NPCs, plus the player when in the through lane.
-    final throughY = <double>[
+  /// Virtual-lead "tuck in behind" yield: a car on the ENDING (narrowing) lane
+  /// gives way to traffic on the SURVIVING lane so the two never pass through
+  /// each other where they converge. Generic over travel direction
+  /// ([northbound] — the player merges north, oncoming traffic south) and
+  /// whether the ending cars signal left (only the player-facing merge does; the
+  /// oncoming mirror is silent). Lanes are matched by spline identity so it's
+  /// order-independent.
+  void _applyConvergenceYield(
+    Spline endingLane,
+    Spline survivingLane, {
+    required bool northbound,
+    required bool signal,
+    Iterable<double> extraSurvivingY = const [],
+  }) {
+    final survY = <double>[
       for (final npc in npcs)
-        if (npc.laneIndex == _throughLaneIndex) worldToLocal(npc.position).y,
-      if (playerOnThrough) playerY,
+        if (identical(npc.spline, survivingLane)) worldToLocal(npc.position).y,
+      ...extraSurvivingY,
     ];
-
     for (final npc in npcs) {
-      if (npc.laneIndex != _mergeLaneIndex) continue;
+      if (!identical(npc.spline, endingLane)) continue;
       final myY = worldToLocal(npc.position).y;
 
-      // Signal left across the move (incl. an advance-warning lead-in before the
-      // taper), drop it once merged.
-      npc.brain.signalLeftForMerge =
-          myY > _taperEndY && myY <= _taperStartY + kIndicatorSignalDistance;
+      if (signal) {
+        // Signal left across the move (with an advance-warning lead-in), drop
+        // it once merged.
+        npc.brain.signalLeftForMerge =
+            myY > _taperEndY && myY <= _taperStartY + kIndicatorSignalDistance;
+      }
 
-      // Yield only where the lanes actually converge. Above [_taperStartY] the
-      // outer lane is fully its own (a car parallel to through traffic at the
-      // wide entry must NOT freeze); at/below [_taperEndY] it has merged and
-      // ordinary same-lane following (from super) takes over.
+      // Yield only where the lanes actually converge (the taper). Outside it the
+      // outer lane is fully its own (must not freeze at the wide end) or has
+      // merged (same-lane following from super takes over).
       if (myY > _taperStartY || myY <= _taperEndY) continue;
 
-      double mergeGap = double.infinity;
-      for (final vY in throughY) {
-        final ahead = myY - vY; // >0 ⇒ through car is ahead (north) of us
+      double gap = double.infinity;
+      for (final vY in survY) {
+        final ahead = northbound ? (myY - vY) : (vY - myY); // >0 ⇒ they're ahead
         if (ahead < -_mergeLeadMargin) continue; // we're clearly in front → go
-        final gap = (ahead - kCarLength).clamp(0.0, double.infinity);
-        if (gap < mergeGap) mergeGap = gap;
+        final g = (ahead - kCarLength).clamp(0.0, double.infinity);
+        if (g < gap) gap = g;
       }
-      if (mergeGap.isFinite) {
+      if (gap.isFinite) {
         final existing = npc.brain.leadCarDistance;
         npc.brain.leadCarDistance =
-            existing == null ? mergeGap : math.min(existing, mergeGap);
+            existing == null ? gap : math.min(existing, gap);
       }
     }
+  }
 
-    // ---- Player grading (passive, lane-scoped) ----
-    // "Actively merging" = in the ending lane AND not yet past the pinch. The
-    // fault, the task and the auto-signal all key off this one condition, so a
-    // player who has already merged in (driving the last stretch of the tile in
-    // the single lane, still on the merge spline) can no longer be flagged for
-    // an "unsafe merge" — which otherwise read as a fault on a later tile.
+  /// Passive, lane-scoped player grading (merge tile only). "Actively merging" =
+  /// in the ending lane AND not yet past the pinch — the "Merge left" task, the
+  /// cut-off fault and the auto-signal all key off it, so a player who has
+  /// already merged in can't be flagged for an "unsafe merge" later.
+  void _updatePlayerMergeGrading(PlayerCar playerCar) {
+    final playerMerging = identical(playerCar.spline, playerPaths[1]);
+    final playerY = worldToLocal(playerCar.position).y;
     final activelyMerging = playerMerging && playerY > _taperEndY;
+
     final s = scenario;
     if (s is MergeScenario) s.playerIsMerging = activelyMerging;
     if (playerMerging) _playerEverMerged = true;
 
-    // Dynamic task: "Merge left" only while actively merging.
-    final wantTask = activelyMerging;
-    if (wantTask != _taskShown) {
-      _taskShown = wantTask;
+    if (activelyMerging != _taskShown) {
+      _taskShown = activelyMerging;
       GameBus.instance.emit(ManeuverAnnouncedEvent(
-          maneuver: null, label: wantTask ? 'Merge left' : null));
+          maneuver: null, label: activelyMerging ? 'Merge left' : null));
     }
-    // Auto-signal left for the whole commanded merge — from the moment the task
-    // appears, not just when the lane bends (mirrors the NPC's signalLeftForMerge).
-    playerCar.forceLeftIndicator = wantTask;
+    playerCar.forceLeftIndicator = activelyMerging;
 
-    // Pass: the player took the ending lane and merged in past the pinch without
-    // a fault (a cut-off would already have failed via onDriverReaction).
     if (!_mergeCleared && _playerEverMerged && playerY <= _taperEndY) {
       _mergeCleared = true;
       s.onSafelyCleared();

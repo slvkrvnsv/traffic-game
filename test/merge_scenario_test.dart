@@ -58,9 +58,9 @@ void main() {
     setUp(() {
       tile = LaneTransitionTile(merging: true)
         ..place(worldPosition: Vector2.zero(), orientation: 0.0);
-      // npcPaths order is [oncoming, through, merge].
-      throughLane = tile.npcPaths[1];
-      mergeLane = tile.npcPaths[2];
+      // npcPaths order is [oncoming-inner, oncoming-outer, through, merge].
+      throughLane = tile.npcPaths[2];
+      mergeLane = tile.npcPaths[3];
       player = PlayerCar();
     });
 
@@ -139,6 +139,49 @@ void main() {
         expect(overlap, isFalse,
             reason: 'cars must never pass through each other '
                 '(frame $i, merge y=${localY(merge).toStringAsFixed(0)})');
+      }
+    });
+  });
+
+  group('Oncoming mirror', () {
+    test('on a WIDEN tile the oncoming side narrows — its two converging cars '
+        'must not phase through each other (the mirror of the merge yield)', () {
+      final widen = LaneTransitionTile(merging: false)
+        ..place(worldPosition: Vector2.zero(), orientation: 0.0);
+      final oncInner = widen.npcPaths[0]; // 560 straight (surviving)
+      final oncOuter = widen.npcPaths[1]; // 480→560 (narrows in, ending)
+
+      // Oncoming travels top→bottom, so spline distance ≈ tile-local y.
+      NpcCar oncAt(Spline path, double y) {
+        final npc = NpcCar(
+            definition: CarVariants.all.first, profileSpeed: kmhToUnits(40));
+        npc.assignSpline(path,
+            startDistance: y.clamp(0.0, path.totalLength),
+            worldOffset: Vector2.zero());
+        npc.speed = kmhToUnits(40);
+        npc.position = npc.splinePosition;
+        npc.angle = npc.splineAngle;
+        return npc;
+      }
+
+      // Inner ahead (further south), outer just behind in the converging taper.
+      final inner = oncAt(oncInner, 420);
+      final outer = oncAt(oncOuter, 380);
+      widen.npcs.addAll([inner, outer]);
+      final player = PlayerCar();
+
+      const dt = 1 / 60;
+      for (int i = 0; i < 180; i++) {
+        widen.updateNpcSensors(dt, player, widen.npcs);
+        inner.update(dt);
+        outer.update(dt);
+        final overlap = obbOverlap(
+          outer.position, kCarWidth, kCarLength, outer.angle,
+          inner.position, kCarWidth, kCarLength, inner.angle,
+        );
+        expect(overlap, isFalse,
+            reason: 'oncoming cars must not phase through as they merge '
+                '(frame $i)');
       }
     });
   });
