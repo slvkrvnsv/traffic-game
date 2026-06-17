@@ -47,15 +47,17 @@ class LaneTransitionTile extends TileBase {
   final bool merging;
 
   static void register() {
-    // Course-only (spawnable: false): connectors only seam correctly when
-    // chained through the 1-lane straight, not dropped into random free drive.
+    // Free-drive spawnable: the lane-match chainer places a merge only after a
+    // 2-lane exit and an extend only after a 1-lane exit, so each connector
+    // always seams onto the lane count it transitions from.
     TileRegistry.register(
       TileType.laneMerge,
       (ctx) => LaneTransitionTile(
         merging: true,
         scenario: ScenarioRegistry.forTile(TileType.laneMerge, rng: ctx.rng),
       ),
-      spawnable: false,
+      entryLanes: 2, // 2→1 lane drop
+      exitLanes: 1,
     );
     TileRegistry.register(
       TileType.laneExtend,
@@ -63,7 +65,8 @@ class LaneTransitionTile extends TileBase {
         merging: false,
         scenario: ScenarioRegistry.forTile(TileType.laneExtend, rng: ctx.rng),
       ),
-      spawnable: false,
+      entryLanes: 1, // 1→2 lane addition
+      exitLanes: 2,
     );
   }
 

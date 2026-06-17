@@ -28,9 +28,10 @@ class StraightOneLaneTile extends TileBase {
         scenario:
             ScenarioRegistry.forTile(TileType.straight1Lane, rng: ctx.rng),
       ),
-      // Course-only: a 1-lane road only seams cleanly between connectors, not
-      // dropped at random next to a 2-lane straight.
-      spawnable: false,
+      // Now free-drive spawnable: the lane-match chainer only places it after a
+      // 1-lane exit, so it never seams a 1-lane end onto a 2-lane start.
+      entryLanes: 1,
+      exitLanes: 1,
     );
   }
 

@@ -36,6 +36,8 @@ class StraightTile extends TileBase {
       (ctx) => StraightTile(
         scenario: ScenarioRegistry.forTile(TileType.straight, rng: ctx.rng),
       ),
+      entryLanes: 2,
+      exitLanes: 2,
     );
   }
 

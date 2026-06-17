@@ -24,6 +24,19 @@ class StartTile extends TileBase {
           scenario: FreeDriveScenario(),
         );
 
+  /// Registered (not spawnable) so its lane profile is known: the free-drive
+  /// chainer looks up the previous tile's exit lane count, and the very first
+  /// spawned tile follows [StartTile]. Exits the single seam lane (x=640).
+  static void register() {
+    TileRegistry.register(
+      TileType.start,
+      (_) => StartTile(),
+      entryLanes: 1,
+      exitLanes: 1,
+      spawnable: false,
+    );
+  }
+
   static const double _cx = kTileSize / 2; // road centreline
   static const double _laneX = _cx + kLaneWidth * 0.5; // 640 — right lane
   static const double _deadEndY = 1150.0; // the road closes here

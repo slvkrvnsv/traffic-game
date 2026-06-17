@@ -32,25 +32,36 @@ class TileSpawnContext {
 
 typedef TileFactory = TileBase Function(TileSpawnContext ctx);
 
+/// How many lanes (player direction) a tile presents at its entry and exit
+/// seam. Free-drive spawning chains tiles so the next tile's [entry] matches
+/// the previous tile's [exit] — the road never gains or drops a lane except
+/// through a connector that explicitly transitions (a 2→1 merge / 1→2 extend).
+/// Symmetric about the centreline, so matching the player side matches oncoming
+/// too. A tile is a *connector* when [entry] != [exit].
+typedef TileLaneProfile = ({int entry, int exit});
+
 /// Registry mapping [TileType] → factory function.
 /// Tiles register themselves via [register]; [TileManager] uses [create].
 class TileRegistry {
   TileRegistry._();
 
   static final Map<TileType, TileFactory> _factories = {};
+  static final Map<TileType, TileLaneProfile> _laneProfiles = {};
 
   /// Types eligible for random free-drive spawning. A registered type can be
   /// [create]d on demand (e.g. as part of a fixed course) without being in the
-  /// random pool — connectors and the 1-lane straight only seam correctly when
-  /// chained, so they register with [spawnable] false to stay out of free drive.
+  /// random pool — e.g. [TileType.start] is placed only as the first tile.
   static final Set<TileType> _spawnable = {};
 
   static void register(
     TileType type,
     TileFactory factory, {
+    required int entryLanes,
+    required int exitLanes,
     bool spawnable = true,
   }) {
     _factories[type] = factory;
+    _laneProfiles[type] = (entry: entryLanes, exit: exitLanes);
     if (spawnable) {
       _spawnable.add(type);
     } else {
@@ -67,7 +78,32 @@ class TileRegistry {
     return factory!(ctx);
   }
 
-  /// Types eligible for random free-drive spawning (and listed individually in
-  /// the test menu). Excludes course-only tiles registered as non-spawnable.
+  /// Lane profile of a registered [type]. Every placed tile type (including
+  /// [TileType.start]) is registered, so the free-drive chainer can always look
+  /// up the previous tile's exit lane count.
+  static TileLaneProfile laneProfile(TileType type) {
+    final p = _laneProfiles[type];
+    assert(p != null, 'No lane profile registered for $type');
+    return p!;
+  }
+
+  static int entryLanesOf(TileType type) => laneProfile(type).entry;
+  static int exitLanesOf(TileType type) => laneProfile(type).exit;
+
+  /// A connector changes the lane count (a merge or an extend); a plain road or
+  /// intersection keeps it.
+  static bool isConnector(TileType type) {
+    final p = laneProfile(type);
+    return p.entry != p.exit;
+  }
+
+  /// Spawnable types whose entry seam carries [lanes] lanes — i.e. the tiles
+  /// that can legally follow a tile exiting with [lanes] lanes.
+  static List<TileType> spawnableWithEntryLanes(int lanes) =>
+      _spawnable.where((t) => entryLanesOf(t) == lanes).toList();
+
+  /// Types eligible for random free-drive spawning. Connectors and the 1-lane
+  /// straight are included (the lane-match invariant chains them correctly); the
+  /// test menu lists only the self-seaming tiles individually (see test_menu).
   static List<TileType> get allTypes => _spawnable.toList();
 }

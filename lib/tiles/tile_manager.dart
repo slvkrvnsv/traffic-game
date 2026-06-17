@@ -379,7 +379,7 @@ class TileManager extends Component {
   void _spawnNextTile() {
     final prevTile = _activeTiles.last;
 
-    TileBase tile = _createTile(_pickNextTileType());
+    TileBase tile = _createTile(_pickNextTileType(prevTile));
     TilePlacement placement = TileConnector.computeNextPlacement(prevTile, tile);
 
     // A sequenced course is a fixed ordered list — re-rolling a tile to dodge an
@@ -391,7 +391,7 @@ class TileManager extends Component {
           attempt < _placementRetries &&
               TileConnector.overlapsAny(placement, liveTiles);
           attempt++) {
-        tile = _createTile(_pickNextTileType());
+        tile = _createTile(_pickNextTileType(prevTile));
         placement = TileConnector.computeNextPlacement(prevTile, tile);
       }
     }
@@ -452,11 +452,34 @@ class TileManager extends Component {
     return npc;
   }
 
-  TileType _pickNextTileType() {
+  /// Pick the next free-drive tile so the road stays lane-continuous: its entry
+  /// seam must carry the same lane count [prevTile] exits with. So a 2-lane tile
+  /// is followed by another 2-lane tile or a 2→1 merge; a 1-lane tile by another
+  /// 1-lane tile or a 1→2 extend — a lane is only ever gained or dropped through
+  /// a connector, never by one popping in or out. Two connectors are never
+  /// chained back-to-back (that would flap the width with no road in between),
+  /// so you always drive the lane count a connector hands you before the next
+  /// transition.
+  TileType _pickNextTileType(TileBase prevTile) {
     if (_isSequenced) return _nextSequencedType();
     if (testMode != null) return testMode!;
-    final types = TileRegistry.allTypes;
-    return types[_rng.nextInt(types.length)];
+    return pickFreeDriveType(prevTile.tileType, _rng);
+  }
+
+  /// The lane-continuous free-drive pick (pure; the source of truth the chain
+  /// test drives). Candidates are the spawnable tiles whose entry seam matches
+  /// [prevType]'s exit lane count; if [prevType] is itself a connector they're
+  /// narrowed to plain roads so two connectors never chain back-to-back.
+  @visibleForTesting
+  static TileType pickFreeDriveType(TileType prevType, Random rng) {
+    final exitLanes = TileRegistry.exitLanesOf(prevType);
+    var candidates = TileRegistry.spawnableWithEntryLanes(exitLanes);
+    if (TileRegistry.isConnector(prevType)) {
+      final roads =
+          candidates.where((t) => !TileRegistry.isConnector(t)).toList();
+      if (roads.isNotEmpty) candidates = roads;
+    }
+    return candidates[rng.nextInt(candidates.length)];
   }
 
   // ---------------------------------------------------------------------------

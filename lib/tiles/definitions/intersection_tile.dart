@@ -70,6 +70,8 @@ class IntersectionTile extends TileBase {
         scenario:
             ScenarioRegistry.forTile(TileType.intersection4way, rng: ctx.rng),
       ),
+      entryLanes: 1, // single-lane approach and exit each way
+      exitLanes: 1,
     );
   }
 

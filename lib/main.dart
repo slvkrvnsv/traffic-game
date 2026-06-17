@@ -9,6 +9,7 @@ import 'tiles/definitions/straight_tile.dart';
 import 'tiles/definitions/straight_one_lane_tile.dart';
 import 'tiles/definitions/lane_transition_tile.dart';
 import 'tiles/definitions/intersection_tile.dart';
+import 'tiles/definitions/start_tile.dart';
 import 'traffic_game.dart';
 import 'ui/game_over_overlay.dart';
 import 'ui/main_menu.dart';
@@ -27,6 +28,7 @@ Future<void> main() async {
   StraightOneLaneTile.register();
   LaneTransitionTile.register();
   IntersectionTile.register();
+  StartTile.register();
 
   // Restore the persisted exam-error history (fault sheet).
   await ExamErrorLog.instance.load();
