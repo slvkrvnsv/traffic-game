@@ -36,6 +36,41 @@ abstract class TileBase extends PositionComponent {
   /// player drives the road, not the turn. Tiles can override.
   bool get allowsLaneChange => playerPaths.length > 1;
 
+  /// Whether the player may change lanes at tile-local [localPos]. Defaults to
+  /// the tile-wide [allowsLaneChange]; tiles whose lanes merge or diverge
+  /// override this to gate steering by *position* — on only where the two lanes
+  /// are (or are about to be) distinct, off where they're coincident so the car
+  /// self-centres onto the single lane. Updated every frame by TileManager.
+  bool allowsLaneChangeAt(Vector2 localPos) => allowsLaneChange;
+
+  /// SPLINE-STEERING — the reusable "fork" hook.
+  ///
+  /// A *fork* is anywhere two player lanes are still **near-coincident** while
+  /// splitting apart or coming together: the START of a widen (lanes about to
+  /// diverge) or the END of a merge (lanes just converged). Both are less than a
+  /// real lane-width apart.
+  ///
+  /// The ordinary lane change leans the car across a lateral *offset* toward the
+  /// target lane. That model breaks at a fork because the target lane is
+  /// **moving** (opening/closing): the offset cap collapses as the gap appears →
+  /// the car snaps, and re-clamping resets the nose every frame → it wobbles.
+  ///
+  /// Spline-steering sidesteps all of it: in a fork the car simply *follows its
+  /// spline*, and a drag SWITCHES which spline it follows. Because the lanes are
+  /// near-coincident the switch is position-continuous (no snap), and the
+  /// spline's own geometry carries the car into the lane — there's no offset to
+  /// jump or cap to reset. Past the fork (lanes a clear lane-width apart) the
+  /// ordinary offset lane change takes over ("loosens after the fork").
+  ///
+  /// To apply it to a tile: override this to return, while the lanes are still
+  /// near-coincident (e.g. their separation < [kMinLaneCommitSeparation]), the
+  /// player spline a drag in [direction] (+1 right / -1 left) should follow.
+  /// Return null where the lanes are clearly separate (→ offset lane change) or
+  /// where there's nothing to switch to. `PlayerCar` does the rest: TileManager
+  /// pushes the targets each frame, and a drag toward one switches onto it
+  /// seamlessly (one switch per drag). Default: never a fork.
+  Spline? splineSteerTargetAt(Vector2 localPos, int direction) => null;
+
   /// Spawnable NPC lanes: each entry is the list of movement paths sharing
   /// one entry point — the spawner picks one per car. The lane index is the
   /// stable identity used for refill counting and (on intersections) the

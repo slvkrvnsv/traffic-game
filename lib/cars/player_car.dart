@@ -68,6 +68,12 @@ class PlayerCar extends CarBase {
     _laneChangeAllowed = allowLaneChange;
   }
 
+  /// Per-frame update of whether steering is allowed at the player's current
+  /// position — TileManager feeds this from the active tile's positional rule
+  /// ([TileBase.allowsLaneChangeAt]), so a merge/widen lane can turn steering
+  /// on/off mid-tile rather than only per-tile.
+  void setLaneChangeAllowed(bool allowed) => _laneChangeAllowed = allowed;
+
   @override
   void update(double dt) {
     _readInput();
@@ -102,15 +108,60 @@ class PlayerCar extends CarBase {
   /// Body yaw relative to the lane heading (radians, + = nose toward the right).
   double _heading = 0.0;
 
+  /// True once the current finger-drag has committed a lane change. While set,
+  /// steering input is ignored and the car settles onto the chosen lane — so a
+  /// single drag is ONE decisive lane change, not a continuous shove that keeps
+  /// dragging / re-committing. Reset when the finger lifts; to change again the
+  /// player drags afresh.
+  bool _steerConsumed = false;
+
+  /// Fork spline-steer targets for the current position (set per-frame by
+  /// TileManager from [TileBase.splineSteerTargetAt]): the spline a left/right
+  /// drag switches onto where two lanes are still near-coincident but splitting
+  /// (a widen fork). Non-null ⇒ the car is in a fork and uses spline-steering.
+  Spline? _forkLeft;
+  Spline? _forkRight;
+
+  /// Per-frame fork targets from the active tile (see [_forkLeft]/[_forkRight]).
+  void setForkTargets(Spline? left, Spline? right) {
+    _forkLeft = left;
+    _forkRight = right;
+  }
+
   void _updateLaneChange(double dt) {
     final input = InputState.instance;
 
-    // Single-lane tiles (intersection maneuvers, start) disallow lane changes:
-    // the road is performing a commanded turn and the player shouldn't be
-    // manoeuvring on top of it. Treat steering as released so the car simply
-    // holds (and gently re-centres on) its lane. The release path is
-    // slew-rate-limited, so it eases in/out without a snap.
-    final steerActive = input.laneSteerActive && _laneChangeAllowed;
+    // A drag is one decisive lane change: once it commits, [_steerConsumed]
+    // drops the finger's influence so the car settles onto the chosen lane
+    // instead of being shoved further. Lifting the finger re-arms it.
+    if (!input.laneSteerActive) _steerConsumed = false;
+
+    // Fork (a widen lane just splitting off — TileManager set the targets):
+    // spline-steer. A drag switches WHICH spline we follow (seamless — the lanes
+    // are near-coincident) and the offset then self-centres onto it. The
+    // offset-based lean is skipped here entirely: it jumps as the edge-pull cap
+    // collapses to the opening lane's separation, and wobbles because each
+    // cap-clamp resets the nose. The spline's own geometry carries the car over.
+    final inFork = _forkLeft != null || _forkRight != null;
+    if (inFork && _laneChangeAllowed && !_steerConsumed && input.laneSteerActive) {
+      final px = input.laneSteerPx;
+      final target = px > kLaneSteerDeadzone
+          ? _forkRight
+          : (px < -kLaneSteerDeadzone ? _forkLeft : null);
+      if (target != null && spline != null && !identical(spline, target)) {
+        _switchSplineSeamless(target);
+        _steerConsumed = true;
+      }
+    }
+
+    // [_laneChangeAllowed] is set per-frame by TileManager from the tile's
+    // positional rule (TileBase.allowsLaneChangeAt). When steering is off
+    // (released, consumed, tile-disabled, or in a fork) the car runs the
+    // slew-limited self-centre onto its current lane.
+    final steerActive = input.laneSteerActive &&
+        _laneChangeAllowed &&
+        !_steerConsumed &&
+        !inFork;
 
     // 1. Target nose angle + how fast the nose may turn toward it. Turn-in is
     //    crisp; the self-centring return is deliberately lazier (safe abort).
@@ -168,24 +219,56 @@ class PlayerCar extends CarBase {
     }
 
     // 4. Cap the lean at the available lanes; straighten the nose at the edge.
-    final maxRight =
-        _hasAdjacent(1) ? kLaneWidth : kLaneWidth * kLaneEdgePullFraction;
-    final maxLeft =
-        _hasAdjacent(-1) ? kLaneWidth : kLaneWidth * kLaneEdgePullFraction;
+    //    The cap is the *actual* separation to the adjacent lane, not a fixed
+    //    lane width — so a lane that diverges in (merge) or out (widen) is
+    //    reachable as soon as it has opened even slightly, instead of being
+    //    unreachable until it happens to be a full lane away. For ordinary
+    //    parallel lanes the separation is exactly kLaneWidth, so this is
+    //    identical to the old behaviour there.
+    // Skipped in a fork: there the spline-switch is the lane change, and a cap
+    // clamp here would reset the nose every frame as the lane's separation
+    // drifts — that per-frame reset is exactly the fork wobble.
+    final sepRight = _adjacentSeparation(1);
+    final sepLeft = _adjacentSeparation(-1);
+    final maxRight = sepRight ?? kLaneWidth * kLaneEdgePullFraction;
+    final maxLeft = sepLeft ?? kLaneWidth * kLaneEdgePullFraction;
     final capped = lateralOffset.clamp(-maxLeft, maxRight);
-    if (capped != lateralOffset) {
+    if (!inFork && capped != lateralOffset) {
       lateralOffset = capped;
       _heading = 0.0;
     }
 
-    // 5. Commit once the car has actually arced past the commit point.
-    final commitDist = kLaneWidth * kLaneCommitFraction;
-    while (lateralOffset >= commitDist && _commitToAdjacent(1)) {
-      lateralOffset -= kLaneWidth; // rebase onto new lane; heading continuous
+    // 5. Commit once the car has arced past [kLaneCommitFraction] of the way to
+    //    the adjacent lane, rebasing by that lane's ACTUAL separation so the
+    //    move is position-continuous even when the lanes aren't a full width
+    //    apart. (Recompute the separation each step — it changes after a
+    //    commit.) For parallel lanes the separation is kLaneWidth, matching the
+    //    old fixed rebase exactly.
+    // Commits are suppressed until the adjacent lane is genuinely separated —
+    // see [kMinLaneCommitSeparation]. Near-coincident lanes (an opening/closing
+    // taper lane) would otherwise click and ping-pong on a hair of offset.
+    while (true) {
+      final sep = _adjacentSeparation(1);
+      if (sep == null ||
+          sep < kMinLaneCommitSeparation ||
+          lateralOffset < sep * kLaneCommitFraction) {
+        break;
+      }
+      if (!_commitToAdjacent(1)) break;
+      lateralOffset -= sep; // rebase onto new lane; heading continuous
+      _steerConsumed = true; // one drag = one lane; finger dropped until release
       HapticFeedback.selectionClick();
     }
-    while (lateralOffset <= -commitDist && _commitToAdjacent(-1)) {
-      lateralOffset += kLaneWidth;
+    while (true) {
+      final sep = _adjacentSeparation(-1);
+      if (sep == null ||
+          sep < kMinLaneCommitSeparation ||
+          lateralOffset > -sep * kLaneCommitFraction) {
+        break;
+      }
+      if (!_commitToAdjacent(-1)) break;
+      lateralOffset += sep;
+      _steerConsumed = true; // one drag = one lane; finger dropped until release
       HapticFeedback.selectionClick();
     }
 
@@ -202,20 +285,45 @@ class PlayerCar extends CarBase {
         : null;
   }
 
-  /// Whether a lane exists on [direction] (+1 right / -1 left) of the current
-  /// lane, without switching to it.
-  bool _hasAdjacent(int direction) {
+  /// Separation (world units) to the nearest lane on [direction] (+1 right / -1
+  /// left) of the current lane, or null if there is none. The lane-change cap
+  /// and commit use this so a merging/diverging lane (variable spacing) is
+  /// handled the same as parallel lanes — where it simply equals [kLaneWidth].
+  double? _adjacentSeparation(int direction) {
     final current = spline;
-    if (current == null || _laneOptions.length < 2) return false;
+    if (current == null || _laneOptions.length < 2) return null;
     final centre = _laneWorldPoint(current);
     final a = splineAngle;
     final perp = Vector2(-math.sin(a), math.cos(a));
+    double? best;
     for (final lane in _laneOptions) {
       if (identical(lane, current)) continue;
       final proj = (_laneWorldPoint(lane) - centre).dot(perp);
-      if (proj * direction > 1.0) return true;
+      if (proj * direction <= 1.0) continue; // not on this side (or too close)
+      final sep = proj.abs();
+      if (best == null || sep < best) best = sep;
     }
-    return false;
+    return best;
+  }
+
+  /// Spline-steer onto [target]: switch the followed spline while keeping the
+  /// car's world position continuous (rebase [lateralOffset] by the lanes'
+  /// current perpendicular separation). At a fork the lanes are near-coincident
+  /// so the rebase is tiny; the self-centre then slides the car onto [target].
+  void _switchSplineSeamless(Spline target) {
+    final current = spline;
+    if (current == null) return;
+    final a = splineAngle;
+    final perp = Vector2(-math.sin(a), math.cos(a));
+    final sep = (_laneWorldPoint(target) - _laneWorldPoint(current)).dot(perp);
+    assignSpline(
+      target,
+      startDistance: currentT * target.totalLength,
+      worldOffset: _laneTileOffset,
+      worldAngle: _laneTileAngle,
+    );
+    lateralOffset -= sep; // keep the world position continuous across the switch
+    HapticFeedback.selectionClick();
   }
 
   /// Switch the spline to the adjacent lane on [direction] (+1 right / -1 left)

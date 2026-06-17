@@ -175,10 +175,23 @@ class TileManager extends Component {
     _checkHandOff();
     _advanceNpcsAcrossSeams(dt);
     _updateNpcSensors(dt);
+    _updatePlayerLaneChange();
     _cullDistantNpcs();
     _cullTrailingTiles();
     _tickRefill(dt);
     _updateDebugState();
+  }
+
+  /// Gate the player's steering by position: the active tile decides whether a
+  /// lane change is allowed where the player currently is (so a merge/widen lane
+  /// can switch steering on/off mid-tile — see TileBase.allowsLaneChangeAt).
+  void _updatePlayerLaneChange() {
+    final tile = activeTile;
+    if (tile == null) return;
+    final local = tile.worldToLocal(playerCar.position);
+    playerCar.setLaneChangeAllowed(tile.allowsLaneChangeAt(local));
+    playerCar.setForkTargets(
+        tile.splineSteerTargetAt(local, -1), tile.splineSteerTargetAt(local, 1));
   }
 
   void _updateNpcSensors(double dt) {

@@ -6,6 +6,7 @@ import '../../core/game_bus.dart';
 import '../../core/spline.dart';
 import '../../cars/npc_car.dart';
 import '../../cars/player_car.dart';
+import '../road_signs.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
 import '../scenarios/scenario_base.dart';
@@ -135,22 +136,66 @@ class LaneTransitionTile extends TileBase {
     ]);
   }
 
+  // Both configs carry the through lane plus the tapered outer lane; [_mergeLane]
+  // adapts its direction via [_openness] — on a merge the outer lane merges in
+  // (720→640), on a widen it diverges out (640→720) as the new lane opens.
+  // [_through] stays first so a hand-off / position tie defaults the player to
+  // driving straight through rather than into the outer lane.
   @override
-  late final List<Spline> playerPaths = merging
-      ? [_through(), _mergeLane()] // first = seam/through lane
-      : [_through()];
+  late final List<Spline> playerPaths = [_through(), _mergeLane()];
+
+  // NPC lane splines as fields so [npcPaths] and [npcLanes] share identity.
+  late final Spline _npcOncoming = _oncoming();
+  late final Spline _npcThrough = _through();
+  late final Spline _npcOuter = _mergeLane();
 
   @override
-  late final List<Spline> npcPaths = merging
-      ? [_oncoming(), _through(), _mergeLane()]
-      : [_oncoming(), _through()];
+  late final List<Spline> npcPaths = [_npcOncoming, _npcThrough, _npcOuter];
 
-  // Steering is ON for the merge so the player can choose to move over early
-  // and time it for a safe gap; the auto-merge spline (the right path) is only
-  // a fallback if they don't. The extend tile stays locked (one lane; the new
-  // lane is joined on the following straight).
   @override
-  bool get allowsLaneChange => merging;
+  late final List<List<Spline>> npcLanes = merging
+      // Merge: the outer lane is its own spawn point (cars start in it and merge
+      // in), so one lane per path — keeps laneIndex oncoming=0/through=1/merge=2
+      // for the merge-yield in updateNpcSensors.
+      ? [
+          [_npcOncoming],
+          [_npcThrough],
+          [_npcOuter],
+        ]
+      // Widen: the new lane opens FROM the entry, so each car arriving in the
+      // inner lane independently rolls "keep straight" vs "take the new lane" —
+      // one entry lane offering both movements (per-car choice, like a junction).
+      : [
+          [_npcOncoming],
+          [_npcThrough, _npcOuter],
+        ];
+
+  // Steering is positional only on the MERGE (see [allowsLaneChangeAt]); the
+  // widen is on the whole tile. NPCs entering at the shared seam randomly
+  // continue straight or take the outer lane via TileManager's seam matcher.
+  @override
+  bool allowsLaneChangeAt(Vector2 localPos) {
+    // Widen: on from the start — you can line up for the new lane as it opens.
+    if (!merging) return allowsLaneChange;
+    // Merge: on while the two lanes are still meaningfully separated; off once
+    // they converge near the end, so the car self-centres onto the single lane.
+    return _openness(localPos.y) * kLaneWidth >= kSteerEnableSeparation;
+  }
+
+  @override
+  Spline? splineSteerTargetAt(Vector2 localPos, int direction) {
+    // The fork is wherever the two player lanes are still near-coincident — the
+    // START of a widen (outer lane about to diverge out) AND the END of a merge
+    // (outer lane just converged in). Same condition for both: the outer lane's
+    // separation from the inner one is below a real lane-width. Past that
+    // they're clearly two lanes → ordinary offset lane change ("loosens").
+    if (_openness(localPos.y) * kLaneWidth >= kMinLaneCommitSeparation) {
+      return null;
+    }
+    // playerPaths = [through (inner/left), outer lane (right)] — a drag picks
+    // the spline on that side; the spline geometry merges in / diverges out.
+    return direction > 0 ? playerPaths[1] : playerPaths[0];
+  }
 
   // The "Merge left" task is announced dynamically by [updateNpcSensors] — only
   // while the player is actually in the ending (right) lane — so there's no
@@ -287,7 +332,13 @@ class LaneTransitionTile extends TileBase {
     _drawPavement(canvas);
     _drawRoad(canvas);
     _drawMarkings(canvas);
-    if (merging) _drawLaneEndsSign(canvas);
+    // Sign on the player's right shoulder near the entry — the lane-ends warning
+    // on a merge, its mirror (lane added) on a widen. Oncoming side never signed.
+    RoadSigns.draw(
+      canvas,
+      merging ? RoadSign.laneEndsRight : RoadSign.laneAddedRight,
+      const Offset(868, 980),
+    );
     debugRenderSplines(canvas);
   }
 
@@ -369,18 +420,14 @@ class LaneTransitionTile extends TileBase {
     const denseDash = 22.0, denseGap = 14.0; // lane-drop warning dots
     double y = 0;
     while (y < kTileSize) {
-      // Density follows how much outer lane is left: full lane → normal dashes,
-      // half gone → already the dense dots (reaches full density by the taper
-      // mid-point, well before the pinch).
-      final double dash, gap;
-      if (ending) {
-        final f = ((1.0 - _openness(y)) / 0.5).clamp(0.0, 1.0);
-        dash = normalDash + (denseDash - normalDash) * f;
-        gap = normalGap + (denseGap - normalGap) * f;
-      } else {
-        dash = normalDash;
-        gap = normalGap;
-      }
+      // Density follows how much outer lane is left: full lane → ordinary
+      // divider, half gone → already the dense lane-drop dots (full density by
+      // the taper mid-point). Applied on BOTH sides — the outer lane is ending
+      // for traffic going one way and *beginning* for the other (which reads it
+      // as a de-densifying line), but either way the dots mark the narrow end.
+      final f = ((1.0 - _openness(y)) / 0.5).clamp(0.0, 1.0);
+      final dash = normalDash + (denseDash - normalDash) * f;
+      final gap = normalGap + (denseGap - normalGap) * f;
       final yEnd = (y + dash).clamp(0.0, kTileSize);
       if (_openness((y + yEnd) / 2) > 0.04) {
         canvas.drawLine(Offset(boundaryX, y), Offset(boundaryX, yEnd), paint);
@@ -438,65 +485,4 @@ class LaneTransitionTile extends TileBase {
     );
   }
 
-  /// The MUTCD W4-2 "Right Lane Ends" warning sign on the right shoulder at the
-  /// entry (south) end — a yellow diamond with the lane-reduction symbol.
-  void _drawLaneEndsSign(Canvas canvas) {
-    const sx = 868.0; // right shoulder (road ends ~760, pavement ~800)
-    const sy = 980.0; // near the entry, before the taper
-    const r = 70.0; // half-diagonal of the diamond
-    final s = r;
-
-    // Post.
-    canvas.drawRect(
-      Rect.fromLTRB(sx - 4, sy + r, sx + 4, sy + r + 90),
-      Paint()..color = const Color(0xFF9E9E9E),
-    );
-
-    // Diamond: yellow fill + black border.
-    final diamond = Path()
-      ..moveTo(sx, sy - r)
-      ..lineTo(sx + r, sy)
-      ..lineTo(sx, sy + r)
-      ..lineTo(sx - r, sy)
-      ..close();
-    canvas.drawPath(diamond, Paint()..color = const Color(0xFFF9C300));
-    canvas.drawPath(
-      diamond,
-      Paint()
-        ..color = const Color(0xFF111111)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 6,
-    );
-
-    final black = Paint()
-      ..color = const Color(0xFF111111)
-      ..style = PaintingStyle.fill;
-
-    // Left bar — the through lane that continues straight.
-    canvas.drawRect(
-      Rect.fromLTRB(sx - 0.34 * s, sy - 0.46 * s, sx - 0.18 * s, sy + 0.46 * s),
-      black,
-    );
-
-    // Right bar — the ending lane: vertical at the bottom, bending up-left.
-    canvas.drawPath(
-      Path()
-        ..moveTo(sx + 0.18 * s, sy + 0.46 * s)
-        ..lineTo(sx + 0.34 * s, sy + 0.46 * s)
-        ..lineTo(sx + 0.34 * s, sy - 0.04 * s)
-        ..lineTo(sx + 0.02 * s, sy - 0.46 * s)
-        ..lineTo(sx - 0.10 * s, sy - 0.46 * s)
-        ..lineTo(sx + 0.18 * s, sy - 0.02 * s)
-        ..close(),
-      black,
-    );
-
-    // Dashed lane line between the two bars, lower half.
-    for (final cy in [sy + 0.14 * s, sy + 0.28 * s, sy + 0.42 * s]) {
-      canvas.drawRect(
-        Rect.fromLTRB(sx - 0.03 * s, cy - 0.05 * s, sx + 0.03 * s, cy + 0.05 * s),
-        black,
-      );
-    }
-  }
 }

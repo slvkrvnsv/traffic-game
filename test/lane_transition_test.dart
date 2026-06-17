@@ -73,13 +73,21 @@ void main() {
   group('LaneTransitionTile — extend (1→2)', () {
     final tile = LaneTransitionTile(merging: false);
 
-    test('is a single player path on the seam with no task', () {
-      expect(tile.playerPaths.length, 1);
+    test('seams on the inner lane, no task, but is drivable', () {
       expect(tile.entryAnchor.x, seamX);
       expect(tile.exitAnchor.x, seamX);
-      expect(tile.allowsLaneChange, isFalse);
-      expect(tile.taskLabel, isNull);
+      expect(tile.taskLabel, isNull); // nothing graded — "just go"
       expect(tile.tileType, TileType.laneExtend);
+      // Two player paths (through + the diverging right lane) and steering ON,
+      // so the player can move into the new lane as it opens.
+      expect(tile.playerPaths.length, 2);
+      expect(tile.allowsLaneChange, isTrue);
+    });
+
+    test('the diverging lane opens from the seam out to the right', () {
+      final diverge = tile.playerPaths[1];
+      expect(diverge.evaluate(0.0).x, closeTo(seamX, 1.0)); // starts on the seam
+      expect(diverge.evaluate(1.0).x, greaterThan(seamX + 40)); // opens right
     });
   });
 }

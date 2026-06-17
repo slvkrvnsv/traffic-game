@@ -149,10 +149,13 @@ const double kReturnSlewRate = 1.8;
 /// at all. Authored in km/h, converted to units.
 const double kHeadingFullSpeedKmh = 33.0;
 const double kHeadingFullSpeed = kHeadingFullSpeedKmh / kSpeedToKmh; // 165 u/s
-/// Self-centring steer (radians of nose angle) per world-unit off-centre. Small
-/// → a shallow corrective angle → a gradual, realistic drift back to the lane
-/// (never reaches [kMaxBodyYaw] within a lane, so no clamp saturation/bounce).
-const double kReturnGain = 0.0035;
+/// Self-centring steer (radians of nose angle) per world-unit off-centre. Big
+/// enough that the car visibly *steers* back into the lane (nose turns, wheels
+/// crank) rather than crabbing sideways with an almost-straight nose. Overshoot
+/// is impossible regardless — the lateral step is monotonic-clamped toward the
+/// lane (and the offset settles at 0 if it would cross) — so a steeper gain is
+/// safe; it just makes the correction read as a real steering input.
+const double kReturnGain = 0.008;
 /// Effective wheelbase (world units) used to derive the front-wheel angle from
 /// the car's yaw rate (bicycle model: δ ≈ atan(wheelbase · yawRate / speed)).
 /// Larger → wheels turn more for a given yaw rate.
@@ -168,6 +171,24 @@ const double kLaneCommitFraction = 0.6;
 /// How far past an edge lane the car may lean (fraction of a lane) when there
 /// is no further lane to commit to — gives a soft "nothing there" feel.
 const double kLaneEdgePullFraction = 0.4;
+/// Minimum real separation (world units) between the current lane and an
+/// adjacent one before a discrete lane-change *commit* is allowed. The car may
+/// still lean toward a closer lane, but no commit (and its haptic) fires until
+/// the lanes are genuinely apart. Without this, a lane that diverges/converges
+/// to near-coincidence (a widen lane just opening, or a merge lane pinching out
+/// at its end) commits on a hair of offset and ping-pongs as the perpendicular
+/// sign flips with numerical noise.
+const double kMinLaneCommitSeparation = kLaneWidth * 0.35; // 28
+/// Separation (world units) at which lane steering itself switches on. Below it
+/// the tile's two lanes are effectively one (a widen lane not yet opened, a
+/// merge lane converged at its end), so steering is disabled and the car
+/// gradually self-centres onto the single lane — the same ease as a steering-off
+/// tile hand-off. Smaller than [kMinLaneCommitSeparation] so the player can
+/// start drifting as soon as the lane opens, while the commit still waits for a
+/// genuine lane-width.
+const double kSteerEnableSeparation = kLaneWidth * 0.1; // 8 — engages early
+
+
 
 // ---------------------------------------------------------------------------
 // Driver reactions (player-error feedback)
