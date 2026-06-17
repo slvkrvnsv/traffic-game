@@ -30,6 +30,12 @@ abstract class TileBase extends PositionComponent {
   List<Spline> get playerPaths;
   List<Spline> get npcPaths;
 
+  /// Whether the player may change lanes while on this tile. Defaults to "only
+  /// if there's more than one parallel lane to switch to", so single-lane tiles
+  /// (intersection maneuvers, start) turn lane switching off entirely — the
+  /// player drives the road, not the turn. Tiles can override.
+  bool get allowsLaneChange => playerPaths.length > 1;
+
   /// Spawnable NPC lanes: each entry is the list of movement paths sharing
   /// one entry point — the spawner picks one per car. The lane index is the
   /// stable identity used for refill counting and (on intersections) the

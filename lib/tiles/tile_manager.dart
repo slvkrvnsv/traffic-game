@@ -139,7 +139,12 @@ class TileManager extends Component {
       worldOffset: tile.position,
       worldAngle: tile.orientation,
     );
-    playerCar.setLaneOptions(tile.playerPaths, tile.position, tile.orientation);
+    playerCar.setLaneOptions(
+      tile.playerPaths,
+      tile.position,
+      tile.orientation,
+      allowLaneChange: tile.allowsLaneChange,
+    );
   }
 
   // ---------------------------------------------------------------------------

@@ -42,17 +42,24 @@ class PlayerCar extends CarBase {
   List<Spline> _laneOptions = const [];
   Vector2 _laneTileOffset = Vector2.zero();
   double _laneTileAngle = 0.0;
+  bool _laneChangeAllowed = true;
 
   /// Record the parallel travel lanes available on the player's current tile,
   /// plus that tile's world placement, so a swipe can switch between them.
+  /// [allowLaneChange] is the tile's own verdict (single-lane maneuver tiles
+  /// say no): when false the steering input is ignored entirely, so the player
+  /// can't manoeuvre on top of a commanded turn — it's lane changing, not
+  /// driving the turn.
   void setLaneOptions(
     List<Spline> lanes,
     Vector2 tileOffset,
-    double tileAngle,
-  ) {
+    double tileAngle, {
+    bool allowLaneChange = true,
+  }) {
     _laneOptions = lanes;
     _laneTileOffset = tileOffset.clone();
     _laneTileAngle = tileAngle;
+    _laneChangeAllowed = allowLaneChange;
   }
 
   @override
@@ -92,11 +99,18 @@ class PlayerCar extends CarBase {
   void _updateLaneChange(double dt) {
     final input = InputState.instance;
 
+    // Single-lane tiles (intersection maneuvers, start) disallow lane changes:
+    // the road is performing a commanded turn and the player shouldn't be
+    // manoeuvring on top of it. Treat steering as released so the car simply
+    // holds (and gently re-centres on) its lane. The release path is
+    // slew-rate-limited, so it eases in/out without a snap.
+    final steerActive = input.laneSteerActive && _laneChangeAllowed;
+
     // 1. Target nose angle + how fast the nose may turn toward it. Turn-in is
     //    crisp; the self-centring return is deliberately lazier (safe abort).
     final double target;
     final double slewRate;
-    if (input.laneSteerActive) {
+    if (steerActive) {
       final steer = (input.laneSteerPx / kSteerInputRange).clamp(-1.0, 1.0);
       target = steer * kMaxBodyYaw;
       slewRate = kHeadingSlewRate;
@@ -122,7 +136,7 @@ class PlayerCar extends CarBase {
     lateralOffset += speed * math.sin(_heading) * dt;
 
     // Settle exactly once centred and straight (released only).
-    if (!input.laneSteerActive &&
+    if (!steerActive &&
         lateralOffset.abs() < 0.5 &&
         _heading.abs() < 0.005) {
       lateralOffset = 0.0;
@@ -157,7 +171,7 @@ class PlayerCar extends CarBase {
     //    straight while the car glides across at a steady angle (physically
     //    correct). null when settled, so spline-curvature steering drives turns.
     extraYaw = _heading;
-    final manoeuvring = input.laneSteerActive || _heading.abs() > 0.005;
+    final manoeuvring = steerActive || _heading.abs() > 0.005;
     steerOverride = manoeuvring
         ? math.atan(kSteerWheelBase * yawRate / math.max(speed, kWheelSpeedFloor))
             .clamp(-0.6, 0.6)
