@@ -20,6 +20,7 @@ class CarPainter {
     required bool rightIndicatorOn,
     required double wheelSteerAngle, // radians, front wheels only
     bool headlightFlash = false, // courtesy flash (waving a car on)
+    bool braking = false, // brake pedal held → taillights blaze red
     double opacity = 1.0,
   }) {
     final bodyW = kCarWidth * def.widthRatio;
@@ -62,8 +63,18 @@ class CarPainter {
     }
 
     // --- Taillights (rear = -x) ---
-    _drawLight(canvas, Offset(-bodyL / 2 + 4, -bodyW / 2 + 5), 5, 3, const Color(0xFFEF9A9A));
-    _drawLight(canvas, Offset(-bodyL / 2 + 4, bodyW / 2 - 5), 5, 3, const Color(0xFFEF9A9A));
+    // Braking blazes them a hot red with a soft glow (the car's "stop" light);
+    // otherwise a dim red running-light.
+    if (braking) {
+      _glowPaint.color = const Color(0xFFFF1744).withValues(alpha: 0.55 * opacity);
+      _drawLight(canvas, Offset(-bodyL / 2 + 4, -bodyW / 2 + 5), 7, 5, const Color(0xFFFF1744));
+      _drawLight(canvas, Offset(-bodyL / 2 + 4, bodyW / 2 - 5), 7, 5, const Color(0xFFFF1744));
+      canvas.drawCircle(Offset(-bodyL / 2 + 1, -bodyW / 2 + 5), 6, _glowPaint);
+      canvas.drawCircle(Offset(-bodyL / 2 + 1, bodyW / 2 - 5), 6, _glowPaint);
+    } else {
+      _drawLight(canvas, Offset(-bodyL / 2 + 4, -bodyW / 2 + 5), 5, 3, const Color(0xFFEF9A9A));
+      _drawLight(canvas, Offset(-bodyL / 2 + 4, bodyW / 2 - 5), 5, 3, const Color(0xFFEF9A9A));
+    }
 
     // --- Wheels ---
     _drawWheels(canvas, bodyL, bodyW, wheelSteerAngle, opacity);

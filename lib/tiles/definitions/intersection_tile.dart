@@ -974,27 +974,48 @@ class IntersectionTile extends TileBase {
   /// Radius of the red octagonal STOP signs.
   static const double _signRadius = 30.0;
 
-  /// One STOP sign per approach, on the right-hand pavement of the entering
-  /// lane, level with that approach's stop line — the signal that this junction
-  /// demands a full stop.
+  /// How far *before* the stop line (toward the approaching driver) the sign
+  /// stands, measured along the approach. Pulls it clear of the rounded curb
+  /// corner so it reads as standing beside the lane, not stuck in the junction.
+  static const double _signSetback = 130.0;
+
+  /// One STOP sign per approach. Each stands on the right-hand sidewalk of its
+  /// entering lane (drive-on-the-right), a little before that approach's stop
+  /// line, and is rotated to face the driver coming in — the signal that this
+  /// junction demands a full stop.
   void _drawStopSigns(Canvas canvas) {
-    final outX = _cx + kRoadWidth / 2 + kPavementWidth / 2; // right pavement
-    final outY = _cy + kRoadWidth / 2 + kPavementWidth / 2;
-    final lineGap = _halfBox + _stopLineGap;
-    // S approach (N-bound, right = +x); N approach (S-bound, right = -x);
-    // W approach (E-bound, right = +y); E approach (W-bound, right = -y).
-    _drawStopSign(canvas, Offset(outX, _cy + lineGap));
-    _drawStopSign(canvas, Offset(kTileSize - outX, _cy - lineGap));
-    _drawStopSign(canvas, Offset(_cx - lineGap, outY));
-    _drawStopSign(canvas, Offset(_cx + lineGap, kTileSize - outY));
+    // Travel direction (tile-local) of each approach's entering traffic.
+    _drawStopSignFor(canvas, const Offset(0, -1)); // S approach → N-bound
+    _drawStopSignFor(canvas, const Offset(0, 1)); //  N approach → S-bound
+    _drawStopSignFor(canvas, const Offset(1, 0)); //  W approach → E-bound
+    _drawStopSignFor(canvas, const Offset(-1, 0)); // E approach → W-bound
   }
 
-  void _drawStopSign(Canvas canvas, Offset center) {
+  /// Places and orients one sign for traffic travelling along [travel].
+  void _drawStopSignFor(Canvas canvas, Offset travel) {
+    // Push fully past the sidewalk onto the grass corner so the octagon never
+    // overlaps the road or pavement (sign inner edge sits at the grass edge).
+    const outward = kRoadWidth / 2 + kPavementWidth + _signRadius;
+    const back = _halfBox + _stopLineGap + _signSetback; // before the stop line
+    // Driver's right, with traffic on the right-hand side of the road.
+    final right = Offset(-travel.dy, travel.dx);
+    final center = const Offset(_cx, _cy) - travel * back + right * outward;
+    // Rotate so the octagon's "up" aligns with travel → STOP reads upright to
+    // the approaching driver.
+    final angle = math.atan2(travel.dx, -travel.dy);
+    _drawStopSign(canvas, center, angle);
+  }
+
+  void _drawStopSign(Canvas canvas, Offset center, double angle) {
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+
     const r = _signRadius;
     final octagon = Path();
     for (int i = 0; i < 8; i++) {
       final a = (22.5 + 45.0 * i) * math.pi / 180.0;
-      final p = Offset(center.dx + r * math.cos(a), center.dy + r * math.sin(a));
+      final p = Offset(r * math.cos(a), r * math.sin(a));
       i == 0 ? octagon.moveTo(p.dx, p.dy) : octagon.lineTo(p.dx, p.dy);
     }
     octagon.close();
@@ -1007,7 +1028,8 @@ class IntersectionTile extends TileBase {
           ..strokeWidth = 3);
 
     final tp = _stopText;
-    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+    tp.paint(canvas, Offset(-tp.width / 2, -tp.height / 2));
+    canvas.restore();
   }
 
   /// The constant "STOP" label — laid out once and reused across every sign and

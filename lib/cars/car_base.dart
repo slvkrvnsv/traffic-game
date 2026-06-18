@@ -198,6 +198,7 @@ abstract class CarBase extends PositionComponent with SplineFollower {
       leftIndicatorOn: leftIndicatorVisible,
       rightIndicatorOn: rightIndicatorVisible,
       headlightFlash: headlightFlashVisible,
+      braking: isBraking && speed > 0.0,
       wheelSteerAngle: _wheelSteerAngle,
     );
     if (kDebugMode) _debugRenderObb(canvas);
