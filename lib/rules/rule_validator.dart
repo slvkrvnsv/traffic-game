@@ -6,7 +6,7 @@ import 'exam_error.dart';
 
 /// Bridges [GameBus] rule events to the *currently active* tile's
 /// [ScenarioBase]. Each tile owns the rule the player must obey there
-/// (e.g. a 4-way intersection uses YieldScenario), so violations are always
+/// (e.g. a 4-way intersection uses StopSignScenario), so violations are always
 /// evaluated against the scenario for the tile the player is actually on.
 ///
 /// The fail model is deliberately narrow: **only a crash ends the run**
@@ -28,18 +28,26 @@ class RuleValidator extends Component {
 
   final List<StreamSubscription<GameEvent>> _subs = [];
 
+  /// Bus generation this validator belongs to; once it's stale (a newer game
+  /// started) this is a leaked listener and must not act — see [GameBus].
+  int _gen = 0;
+  bool get _stale => _gen != GameBus.instance.generation;
+
   void bindScenarioSource(ScenarioBase? Function() source) {
     _scenarioSource = source;
   }
 
-  ScenarioBase? get _activeScenario => _scenarioSource?.call();
+  ScenarioBase? get _activeScenario =>
+      _stale ? null : _scenarioSource?.call();
 
   @override
   void onMount() {
     super.onMount();
+    _gen = GameBus.instance.generation;
 
     // Collisions are unconditional and tile-independent — fail immediately.
     _subs.add(GameBus.instance.on<CollisionEvent>().listen((e) {
+      if (_stale) return; // leaked listener from a restarted game
       final reason = e.otherType == 'pedestrian'
           ? 'You hit a pedestrian!'
           : 'You crashed into another car!';

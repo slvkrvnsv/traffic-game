@@ -14,11 +14,14 @@ enum TileType {
   // N-S mirror of a merge. See LaneTransitionTile.
   laneMerge,
   laneExtend,
+  // US all-way STOP. Every approach has a STOP sign; the player must come to a
+  // complete stop at the line, even when the box is clear (a rolling stop is a
+  // fault). See [IntersectionTile].
   intersection4way,
   // The opening parking-lot tile. Placed only as the first tile (never
   // registered for random spawning), so it is absent from [allTypes].
   start,
-  // Future: stopSign, trafficLight, roundabout, toll, cop, dealer
+  // Future: trafficLight, roundabout, toll, cop, dealer
 }
 
 /// Per-spawn variation passed to tile factories. Tiles pick their own
@@ -53,12 +56,19 @@ class TileRegistry {
   /// random pool — e.g. [TileType.start] is placed only as the first tile.
   static final Set<TileType> _spawnable = {};
 
+  /// "Junction" tiles — those that interrupt a plain drive with a stop or
+  /// right-of-way negotiation (an intersection; later a traffic light or
+  /// roundabout). Free-drive keeps a plain road between any two interrupting
+  /// tiles so the player is never asked to stop twice in a row.
+  static final Set<TileType> _junctions = {};
+
   static void register(
     TileType type,
     TileFactory factory, {
     required int entryLanes,
     required int exitLanes,
     bool spawnable = true,
+    bool junction = false,
   }) {
     _factories[type] = factory;
     _laneProfiles[type] = (entry: entryLanes, exit: exitLanes);
@@ -67,7 +77,15 @@ class TileRegistry {
     } else {
       _spawnable.remove(type);
     }
+    if (junction) {
+      _junctions.add(type);
+    } else {
+      _junctions.remove(type);
+    }
   }
+
+  /// Whether [type] interrupts a plain drive (intersection / future signals).
+  static bool isJunction(TileType type) => _junctions.contains(type);
 
   static TileBase create(
     TileType type, [

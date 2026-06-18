@@ -7,12 +7,19 @@ import 'car_definition.dart';
 /// All drawing is in local space centred on (0, 0), facing right (+x).
 /// The caller is responsible for applying the world transform.
 class CarPainter {
+  /// Reused glow brush for the headlight courtesy flash — the `MaskFilter.blur`
+  /// is constant and costly to rebuild, so it's allocated once; callers update
+  /// only its colour/alpha.
+  static final Paint _glowPaint = Paint()
+    ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+
   static void paint({
     required Canvas canvas,
     required CarDefinition def,
     required bool leftIndicatorOn,
     required bool rightIndicatorOn,
     required double wheelSteerAngle, // radians, front wheels only
+    bool headlightFlash = false, // courtesy flash (waving a car on)
     double opacity = 1.0,
   }) {
     final bodyW = kCarWidth * def.widthRatio;
@@ -39,8 +46,20 @@ class CarPainter {
     canvas.drawRRect(roofRect, roofPaint);
 
     // --- Headlights (front = +x) ---
-    _drawLight(canvas, Offset(bodyL / 2 - 4, -bodyW / 2 + 5), 5, 3, const Color(0xFFFFF9C4));
-    _drawLight(canvas, Offset(bodyL / 2 - 4, bodyW / 2 - 5), 5, 3, const Color(0xFFFFF9C4));
+    // When flashing (courtesy "go ahead" at a stop), the lamps blaze bright
+    // white with a soft glow; otherwise a dim warm running-light.
+    if (headlightFlash) {
+      // Reuse one Paint/MaskFilter (the blur is the costly part and is
+      // constant); only the alpha tracks the fade.
+      _glowPaint.color = const Color(0xFFFFFFFF).withValues(alpha: 0.5 * opacity);
+      _drawLight(canvas, Offset(bodyL / 2 - 3, -bodyW / 2 + 5), 12, 8, const Color(0xFFFFFFFF));
+      _drawLight(canvas, Offset(bodyL / 2 - 3, bodyW / 2 - 5), 12, 8, const Color(0xFFFFFFFF));
+      canvas.drawCircle(Offset(bodyL / 2 + 2, -bodyW / 2 + 5), 7, _glowPaint);
+      canvas.drawCircle(Offset(bodyL / 2 + 2, bodyW / 2 - 5), 7, _glowPaint);
+    } else {
+      _drawLight(canvas, Offset(bodyL / 2 - 4, -bodyW / 2 + 5), 5, 3, const Color(0xFFFFF9C4));
+      _drawLight(canvas, Offset(bodyL / 2 - 4, bodyW / 2 - 5), 5, 3, const Color(0xFFFFF9C4));
+    }
 
     // --- Taillights (rear = -x) ---
     _drawLight(canvas, Offset(-bodyL / 2 + 4, -bodyW / 2 + 5), 5, 3, const Color(0xFFEF9A9A));

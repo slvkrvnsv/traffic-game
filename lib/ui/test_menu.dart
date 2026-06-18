@@ -36,13 +36,13 @@ class TestMenuScreen extends StatelessWidget {
             _tile('Straight Road', Icons.straight_rounded, TileType.straight),
           ],
         TileType.intersection4way => [
-            _tile('4-Way Yield — Random', Icons.shuffle_rounded,
+            _tile('4-Way Stop — Random', Icons.shuffle_rounded,
                 TileType.intersection4way),
-            _tile('4-Way Yield — Straight', Icons.straight_rounded,
+            _tile('4-Way Stop — Straight', Icons.straight_rounded,
                 TileType.intersection4way, Maneuver.straight),
-            _tile('4-Way Yield — Turn Left', Icons.turn_left_rounded,
+            _tile('4-Way Stop — Turn Left', Icons.turn_left_rounded,
                 TileType.intersection4way, Maneuver.left),
-            _tile('4-Way Yield — Turn Right', Icons.turn_right_rounded,
+            _tile('4-Way Stop — Turn Right', Icons.turn_right_rounded,
                 TileType.intersection4way, Maneuver.right),
           ],
         // straight1Lane / laneMerge / laneExtend are only meaningful chained in
@@ -124,15 +124,20 @@ class _TileCard extends StatelessWidget {
           children: [
             Icon(icon, color: const Color(0xFF42A5F5), size: 32),
             const SizedBox(width: 16),
-            Text(
-              label,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
+            Expanded(
+              child: Text(
+                label,
+                softWrap: true,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
-            const Spacer(),
+            const SizedBox(width: 8),
             const Icon(Icons.chevron_right_rounded, color: Colors.white38),
           ],
         ),

@@ -1,5 +1,6 @@
 import 'package:flame/components.dart';
 import '../cars/player_car.dart';
+import '../core/game_bus.dart';
 import '../core/maneuver.dart';
 import '../feedback/driver_reaction_detector.dart';
 import '../pedestrians/pedestrian.dart';
@@ -32,6 +33,10 @@ class GameWorld extends World {
   @override
   Future<void> onLoad() async {
     await super.onLoad();
+
+    // New game → new bus generation, so any leaked listeners from a previous
+    // (restarted) game go inert before this game's components subscribe.
+    GameBus.instance.newGeneration();
 
     playerCar = PlayerCar();
     add(playerCar);

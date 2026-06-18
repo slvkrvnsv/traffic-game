@@ -34,7 +34,10 @@ void main() {
   });
 
   test('a long free-drive chain is lane-continuous and never chains two '
-      'connectors back-to-back', () {
+      'interrupting tiles (connector/junction) back-to-back', () {
+    bool interrupts(TileType t) =>
+        TileRegistry.isConnector(t) || TileRegistry.isJunction(t);
+
     final rng = Random(42);
     var prev = TileType.start; // the chain always opens on the start tile
     for (int i = 0; i < 5000; i++) {
@@ -44,9 +47,10 @@ void main() {
           reason: 'lane popped: $prev (exit ${TileRegistry.exitLanesOf(prev)}) '
               '→ $next (entry ${TileRegistry.entryLanesOf(next)})');
 
-      if (TileRegistry.isConnector(prev)) {
-        expect(TileRegistry.isConnector(next), isFalse,
-            reason: 'back-to-back connectors flap the width: $prev → $next');
+      if (interrupts(prev)) {
+        expect(interrupts(next), isFalse,
+            reason: 'two interrupting tiles back-to-back '
+                '(width-flap / double-stop): $prev → $next');
       }
       prev = next;
     }

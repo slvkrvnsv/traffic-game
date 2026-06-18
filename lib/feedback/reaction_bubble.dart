@@ -22,6 +22,7 @@ class ReactionBubble extends PositionComponent {
     required this.target,
     required this.player,
     required this.reaction,
+    this.fixedAngle,
   })  : _remaining = reaction.duration,
         super(
           size: Vector2(54, 46),
@@ -32,6 +33,13 @@ class ReactionBubble extends PositionComponent {
   final NpcCar target;
   final PlayerCar player;
   final DriverReaction reaction;
+
+  /// When set, the bubble sits along this fixed world heading from the car and
+  /// renders upright relative to it, instead of tracking the player's live
+  /// heading. Used for the fail-to-yield markers, which lock to the direction
+  /// the player drives through the intersection box (the tile's world "north",
+  /// which varies with the tile's placement) so they read consistently.
+  final double? fixedAngle;
 
   double _remaining;
 
@@ -49,7 +57,9 @@ class ReactionBubble extends PositionComponent {
     }
     // Screen-up in world coordinates is the player's heading (camera points the
     // player up). Offsetting along it puts the bubble above the car on screen.
-    final a = player.splineAngle;
+    // Fail-to-yield markers instead lock to a fixed heading so they read
+    // consistently as the player crosses the box.
+    final a = fixedAngle ?? player.splineAngle;
     position
       ..setFrom(target.position)
       ..x += math.cos(a) * _offset

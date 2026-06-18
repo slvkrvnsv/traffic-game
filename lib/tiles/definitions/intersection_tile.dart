@@ -1,40 +1,26 @@
 import 'dart:math' as math;
-import 'dart:ui';
 import 'package:flame/components.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
 import '../../core/constants.dart';
 import '../../core/maneuver.dart';
 import '../../core/spline.dart';
 import '../../core/game_bus.dart';
 import '../../cars/npc_car.dart';
 import '../../cars/player_car.dart';
+import '../../feedback/driver_reaction.dart';
+import '../../feedback/reaction_bubble.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
 import '../scenarios/scenario_base.dart';
 import '../scenarios/scenario_registry.dart';
-import '../scenarios/yield_scenario.dart';
+import '../scenarios/stop_sign_scenario.dart';
 
 /// Cardinal heading of a vehicle travelling through the intersection.
 /// Ordered clockwise so `(index + 1) % 4` = next clockwise neighbour.
 enum Heading { north, east, south, west }
 
-extension _HeadingX on Heading {
-  /// The heading a driver with *this* heading must yield to.
-  ///
-  /// In right-hand traffic, yield to the car approaching from your right.
-  /// A driver heading N sees traffic coming from the east side of the
-  /// intersection — those cars are W-bound (moving away to the west).
-  /// So N yields to W, E yields to N, S yields to E, W yields to S:
-  /// i.e. the *counter-clockwise* neighbour.
-  Heading get yieldsTo =>
-      Heading.values[(index - 1 + Heading.values.length) %
-          Heading.values.length];
-
-  /// The opposite approach (oncoming traffic).
-  Heading get opposite => Heading.values[(index + 2) % Heading.values.length];
-}
-
-/// 4-way uncontrolled intersection.
+/// 4-way US all-way STOP intersection.
 ///
 /// In the canonical frame the player enters from the south; the commanded
 /// [maneuver] decides whether the player path goes straight (exit north),
@@ -42,17 +28,20 @@ extension _HeadingX on Heading {
 /// accordingly via tile placement. NPC traffic flows straight through in all
 /// four cardinal directions.
 ///
-/// Right-of-way is evaluated per *movement* (approach + path through the
-/// box): two movements conflict when their paths actually cross or merge,
-/// computed geometrically from the splines. On top of that: never enter an
-/// occupied box, first-come-first-served, yield-to-the-right on ties, and a
-/// left turn always gives way to oncoming traffic.
+/// A red STOP sign stands at every approach. The player must come to a
+/// **complete stop** at the line, every time, even when the box is clear — a
+/// rolling stop is a fault (graded by [StopSignScenario]). Right-of-way after
+/// the stop is evaluated per *movement* (approach + path through the box): two
+/// movements conflict when their paths actually cross or merge, computed
+/// geometrically from the splines. On top of that: never enter an occupied
+/// box, first-come-first-served, yield-to-the-right on ties, and a left turn
+/// always gives way to oncoming traffic.
 class IntersectionTile extends TileBase {
-  IntersectionTile({this.maneuver = Maneuver.straight, ScenarioBase? scenario})
-      : super(
-          tileType: TileType.intersection4way,
-          scenario: scenario ?? YieldScenario(),
-        );
+  IntersectionTile({
+    this.maneuver = Maneuver.straight,
+    super.tileType = TileType.intersection4way,
+    ScenarioBase? scenario,
+  }) : super(scenario: scenario ?? StopSignScenario());
 
   /// The exam instruction for this tile.
   final Maneuver maneuver;
@@ -72,6 +61,7 @@ class IntersectionTile extends TileBase {
       ),
       entryLanes: 1, // single-lane approach and exit each way
       exitLanes: 1,
+      junction: true, // never chained back-to-back in free-drive
     );
   }
 
@@ -106,6 +96,12 @@ class IntersectionTile extends TileBase {
   /// Tile-local Y of the player's stop line on the south approach. The yield
   /// rule is evaluated at this line, so the painted marking == the rule.
   static const double _playerStopLineY = _cy + _halfBox + _stopLineGap;
+
+  /// How close to the stop line (along the approach) a complete stop must be
+  /// made to count as stopping "at the sign" — ~1.5 car lengths. A full stop
+  /// further back than this, followed by accelerating through the line, is a
+  /// rolling stop, not a legal one.
+  static const double _stopCreditWindow = kCarLength * 1.5;
 
   /// Radius of the rounded curb drawn at each intersection corner.
   static const double _curbRadius = 72.0;
@@ -216,12 +212,6 @@ class IntersectionTile extends TileBase {
 
   @override
   late final List<Spline> npcPaths = [for (final lane in npcLanes) ...lane];
-
-  /// Maneuver of each NPC movement path (lane order is [Maneuver.values]).
-  late final Map<Spline, Maneuver> _maneuverByPath = {
-    for (final lane in npcLanes)
-      for (int i = 0; i < lane.length; i++) lane[i]: Maneuver.values[i],
-  };
 
   @override
   Vector2 get entryAnchor => Vector2(_nLaneX, kTileSize);
@@ -339,48 +329,29 @@ class IntersectionTile extends TileBase {
     return false;
   }
 
-  /// Window (world units) within which two vehicles count as arriving together,
-  /// so the yield-to-the-right tie-break applies instead of first-come-first.
-  static const double _arrivalTieBand = 60.0;
-
-  /// Whether the movement ([mine] approach, [myPath], [myManeuver]) at
-  /// tile-local [myLocal] must give way to *any* conflicting traffic —
-  /// looking at the whole intersection, not one car:
-  ///   1. Never enter the box while a conflicting car occupies it (safety).
-  ///   2. A left turn gives way to approaching oncoming traffic, always.
-  ///   3. Let a conflicting car that clearly reached the box first proceed
-  ///      (first-come-first-served, by distance remaining to the box).
-  ///   4. On a near-simultaneous arrival, give way to the car on the right.
-  ///      If that car has itself stopped (a symmetric stand-off) we proceed, so
-  ///      the intersection can never dead-lock.
-  bool _mustGiveWay(
-    Heading mine,
-    Spline myPath,
-    Maneuver myManeuver,
-    Vector2 myLocal,
-    List<_VehicleSample> vehicles,
+  /// Greedy first-come-first-served release for an all-way stop. Given the
+  /// waiters in ascending arrival-ticket order, the ids already committed to
+  /// the box ([going] — cars in the box plus earlier grants), and a [conflicts]
+  /// predicate, returns the full set permitted to proceed.
+  ///
+  /// A waiter is released unless a *conflicting* car is already going. Walking
+  /// in ticket order means the earliest of any mutually-conflicting group wins
+  /// and the rest hold, so the result is a total order that cannot dead-lock:
+  /// for any set of conflicting stopped cars at least one (the lowest ticket)
+  /// proceeds, and the next proceeds once it clears. Pure and side-effect free
+  /// so the invariant is unit-testable without splines or live cars.
+  @visibleForTesting
+  static Set<Object> computeReleases(
+    List<Object> waitersByTicket,
+    Set<Object> going,
+    bool Function(Object a, Object b) conflicts,
   ) {
-    final myGap = _gapToStopLine(mine, myLocal);
-    var tieYield = false;
-    for (final v in vehicles) {
-      if (!_movementsConflict(mine, myPath, v.heading, v.path)) continue;
-      final z = _zoneOf(v.heading, v.localPos);
-      if (z == _Zone.inBox) return true; // (1) box occupied — always wait
-      if (z != _Zone.approaching) continue;
-      if (myManeuver == Maneuver.left &&
-          v.heading == mine.opposite &&
-          v.speed > kStopSpeedThreshold) {
-        return true; // (2) left turn yields to moving oncoming traffic
-      }
-      final vGap = _gapToStopLine(v.heading, v.localPos);
-      if (vGap < myGap - _arrivalTieBand) return true; // (3) they're clearly first
-      if ((vGap - myGap).abs() <= _arrivalTieBand &&
-          v.heading == mine.yieldsTo &&
-          v.speed > kStopSpeedThreshold) {
-        tieYield = true; // (4) simultaneous → yield to the moving car on the right
-      }
+    final result = Set<Object>.from(going);
+    for (final w in waitersByTicket) {
+      final blocked = result.any((g) => g != w && conflicts(w, g));
+      if (!blocked) result.add(w);
     }
-    return tieYield;
+    return result;
   }
 
   /// Distance from [localPos] to this heading's painted stop line, measured
@@ -412,11 +383,12 @@ class IntersectionTile extends TileBase {
     super.updateNpcSensors(dt, playerCar, allNpcs); // lead-car gaps first
 
     // Collect every vehicle that sits on one of *this* tile's lanes together
-    // with its heading, in tile-local coordinates.
+    // with its heading and identity, in tile-local coordinates.
     final samples = <_VehicleSample>[
       // Player always enters from the south in the canonical frame; its path
       // through the box depends on the commanded maneuver.
       _VehicleSample(
+        id: _playerId,
         heading: Heading.north,
         path: playerPaths.first,
         localPos: worldToLocal(playerCar.position),
@@ -429,6 +401,7 @@ class IntersectionTile extends TileBase {
             npc.laneIndex < Heading.values.length &&
             npc.spline != null)
           _VehicleSample(
+            id: npc,
             heading: Heading.values[npc.laneIndex],
             path: npc.spline!,
             localPos: worldToLocal(npc.position),
@@ -436,50 +409,361 @@ class IntersectionTile extends TileBase {
           ),
     ];
 
-    // For each NPC: only cars currently approaching the box need to decide
-    // whether to yield. Cars already in the box or past it cruise through.
+    final going = _arbitrateAllWayStop(dt, samples);
+    _playerReleased = going.contains(_playerId);
+
+    // Apply the decision to each NPC. A car not yet released must stop at its
+    // line (the mandatory all-way stop); a released car cruises through. A car
+    // waiting on a hesitating player flashes its headlights (waving you on).
     for (final npc in npcs) {
+      // Clear transient cues first, so a car that slips into an invalid state
+      // (and skips the rest of the loop) never keeps a stale flash / speed cap.
+      npc.setHeadlightFlash(_playerWaiters.contains(npc));
       if (npc.laneIndex < 0 ||
           npc.laneIndex >= Heading.values.length ||
           npc.spline == null) {
+        npc.brain.speedCap = null;
         continue;
       }
       final heading = Heading.values[npc.laneIndex];
-      final path = npc.spline!;
       final localPos = worldToLocal(npc.position);
-      final myZone = _zoneOf(heading, localPos);
-
-      if (myZone != _Zone.approaching) {
-        // Not approaching → never required to yield. (stopTargetDistance was
-        // already cleared by super.updateNpcSensors.)
+      final z = _zoneOf(heading, localPos);
+      if (z != _Zone.approaching) {
+        // In the box or past it — cruise through. (stopTargetDistance was
+        // already cleared by super.updateNpcSensors.) Hold a calm speed while
+        // still inside the box, resume normal speed once past it.
         npc.brain.intersectionRuleActive = false;
         npc.brain.hasRightOfWay = true;
+        npc.brain.speedCap = z == _Zone.inBox ? kNpcTurnSpeed : null;
         continue;
       }
-
-      final npcManeuver = _maneuverByPath[path] ?? Maneuver.straight;
-      final threatened =
-          _mustGiveWay(heading, path, npcManeuver, localPos, samples);
-      npc.brain.intersectionRuleActive = threatened;
-      npc.brain.hasRightOfWay = !threatened;
-      // When yielding, stop at this approach's painted line.
+      final go = going.contains(npc);
+      npc.brain.intersectionRuleActive = !go;
+      npc.brain.hasRightOfWay = go;
       npc.brain.stopTargetDistance =
-          threatened ? _gapToStopLine(heading, localPos) : null;
+          go ? null : _gapToStopLine(heading, localPos);
+      // A released car eases out of the line at a calm crossing speed rather
+      // than flooring it — especially when it's taking a hesitating player's turn.
+      npc.brain.speedCap = go ? kNpcTurnSpeed : null;
     }
 
-    // The player is legitimately required to wait while approaching/inside the
-    // box if a car it must yield to is threatening — used to exempt the stop
-    // from the road-blocking penalty.
+    // The player legitimately waits while approaching/inside the box until the
+    // arbiter releases it — used to exempt that stop from the road-blocking
+    // penalty. (The player isn't *forced* to stop here; the stop-sign fault is
+    // graded separately in [_checkPlayerStop].)
     final playerLocal = worldToLocal(playerCar.position);
+    if (kDebugMode) _debugPlayerLocal = playerLocal;
     final pZone = _zoneOf(Heading.north, playerLocal);
-    _playerMustWait =
-        (pZone == _Zone.approaching || pZone == _Zone.inBox) &&
-            _mustGiveWay(Heading.north, playerPaths.first, maneuver,
-                playerLocal, samples);
+    // Waiting your turn AT THE LINE (approaching) is always exempt from the
+    // road-blocking penalty. Inside the box it's exempt ONLY while another car
+    // is also in the box — i.e. a genuine yield (e.g. a left-turner waiting for
+    // oncoming to clear). A player parked *alone* in the box is blocking the
+    // intersection for cross-traffic that's stuck behind it (it's a blocker,
+    // and the hesitation/demotion machinery only covers the approach), so it is
+    // NOT exempt — letting that earn a road-block fault is the deadlock-breaker.
+    // A normal crossing clears well within the road-block grace.
+    _playerMustWait = pZone == _Zone.approaching ||
+        (pZone == _Zone.inBox && _otherCarInBox);
 
-    // Player yield-violation detection.
-    _checkPlayerYield(playerCar, samples);
+    // Player stop-sign violation detection.
+    _checkPlayerStop(playerCar, samples);
   }
+
+  /// Sentinel identity for the player in the arrival-order bookkeeping.
+  static final Object _playerId = Object();
+
+  /// Arrival-order ("first to stop, first to go") tickets, keyed by vehicle
+  /// identity, and the monotonic sequence that assigns them. A vehicle joins
+  /// the queue the first frame it is at rest and frontmost on its approach.
+  final Map<Object, int> _ticket = {};
+  int _ticketSeq = 0;
+
+  /// Vehicles already released to proceed; sticky so a car that has been waved
+  /// through isn't re-stopped mid-crossing. Cleared when it leaves the tile or
+  /// clears the box.
+  final Set<Object> _granted = {};
+
+  /// A car in the box that has driven past its conflict point (the box centre,
+  /// plus a small margin) is on its way out, so it no longer blocks a
+  /// conflicting car from starting — the next driver can roll as it clears.
+  static const double _boxClearMargin = 8.0;
+
+  /// Whether a car in the box has cleared the conflict region enough to stop
+  /// blocking a conflicting waiter. For a **straight-through** car this is just
+  /// "past the box centre along its travel axis" (its conflict point is the
+  /// centre). A **turning** car is NOT judged by the approach axis — its body
+  /// swings laterally across the box well after its approach-axis coordinate
+  /// passes centre, so it must stay a blocker until it has fully left the box
+  /// (zone `past`/`far`); otherwise a conflicting car is released into the box
+  /// while the turner is still crossing it.
+  bool _isClearing(Heading heading, Vector2 localPos, Spline path) =>
+      _movementStraight(path) && _pastBoxCentre(heading, localPos);
+
+  bool _pastBoxCentre(Heading heading, Vector2 localPos) {
+    switch (heading) {
+      case Heading.north: // moving -y
+        return localPos.y < _cy - _boxClearMargin;
+      case Heading.south: // moving +y
+        return localPos.y > _cy + _boxClearMargin;
+      case Heading.east: // moving +x
+        return localPos.x > _cx + _boxClearMargin;
+      case Heading.west: // moving -x
+        return localPos.x < _cx - _boxClearMargin;
+    }
+  }
+
+  /// Whether a movement runs straight through (entry direction ≈ exit
+  /// direction). Cached per spline — path identity is stable for a tile.
+  final Map<Spline, bool> _straightCache = {};
+  bool _movementStraight(Spline path) => _straightCache.putIfAbsent(
+      path, () => path.tangent(0.0).dot(path.tangent(1.0)) > 0.85);
+
+  /// An NPC only flashes once it has itself come to a stop and waited at least
+  /// this long — no flashing while still rolling up to the line.
+  static const double _npcFlashAfterStopSeconds = 1.0;
+
+  /// After the player has held the right of way but sat still this long, the
+  /// waiting NPCs stop waiting and take the turn themselves, so a hesitating
+  /// player can never freeze the intersection.
+  static const double _hesitationGoSeconds = 3.0;
+
+  /// How long the player has held the right of way without moving.
+  double _playerHesitationTimer = 0.0;
+
+  /// Sticky: the player forfeited its turn (hesitated past the go threshold).
+  /// Stays set for the rest of the approach so a momentary twitch can't undo it.
+  bool _playerDemoted = false;
+
+  /// Whether a vehicle other than the player is currently inside the conflict
+  /// box — used to tell a legitimate in-box yield (waiting for crossing traffic)
+  /// from a player stalled alone in the intersection.
+  bool _otherCarInBox = false;
+
+  /// Per-NPC time spent stopped and waiting at the line (gates the flash).
+  final Map<Object, double> _npcWaitTime = {};
+
+  /// The single NPC flashing its headlights at the hesitating player (the one
+  /// next in line). Held as a list so the apply loop's `.contains` check is
+  /// uniform, but it carries at most one car.
+  final List<NpcCar> _playerWaiters = [];
+
+  /// Run one frame of all-way-stop arbitration over [samples]; returns the ids
+  /// committed to proceed (blocking the box, or released this frame).
+  Set<Object> _arbitrateAllWayStop(double dt, List<_VehicleSample> samples) {
+    final present = {for (final v in samples) v.id};
+    _ticket.removeWhere((id, _) => !present.contains(id));
+    _granted.removeWhere((id) => !present.contains(id));
+
+    final zone = {for (final v in samples) v.id: _zoneOf(v.heading, v.localPos)};
+    final gap = {
+      for (final v in samples) v.id: _gapToStopLine(v.heading, v.localPos)
+    };
+    _otherCarInBox = samples
+        .any((v) => v.id != _playerId && zone[v.id] == _Zone.inBox);
+
+    // Hesitation: the player has been released (its turn) but is sitting still
+    // at the line. Time it; past the flash threshold the waiters wave it on,
+    // and past the go threshold the player is demoted so they take their turn.
+    final playerSpeed =
+        samples.firstWhere((v) => v.id == _playerId).speed;
+    final playerHesitating = _granted.contains(_playerId) &&
+        zone[_playerId] == _Zone.approaching &&
+        playerSpeed <= kStopSpeedThreshold;
+    _playerHesitationTimer = playerHesitating ? _playerHesitationTimer + dt : 0.0;
+    // Demotion is *sticky* for the rest of this approach: once we've waved the
+    // player on and the NPCs have started their turn, a one-frame twitch above
+    // the stop threshold (which resets the timer) must not un-demote and let the
+    // player's early ticket re-block the cars mid-pull-out. Cleared on the
+    // fresh-approach reset in [_checkPlayerStop].
+    if (_playerHesitationTimer >= _hesitationGoSeconds) _playerDemoted = true;
+    final demotePlayer = _playerDemoted;
+    // Graceful handoff: once we've waved the player on and let the NPCs take
+    // their turn, the player isn't penalised for finally going — suppress its
+    // own fail-to-yield for this crossing (re-armed on the next approach).
+    if (demotePlayer) _yieldViolationFired = true;
+
+    // A car that has left the box is done — forget its ticket/grant. This must
+    // cover both exits: straight out (`past`) AND turned away to the side, which
+    // `_zoneOf` (measuring along the approach axis) reports as `far`. Clearing
+    // only `past` left a turned car holding a stale ticket, so it kept
+    // "outranking" the player long after it was gone — a phantom "failed to
+    // yield to a car far away" on the next crossing. A car that simply hasn't
+    // arrived yet is also `far` but holds no ticket, so this is safe.
+    for (final v in samples) {
+      final z = zone[v.id];
+      if (z != _Zone.approaching && z != _Zone.inBox) {
+        _ticket.remove(v.id);
+        _granted.remove(v.id);
+      }
+    }
+
+    // Ticketing: a car claims its turn (arrival order) once it is at rest *and*
+    // frontmost on its own approach — no other car ahead of it that is still
+    // approaching the box. This is the all-way-stop "one car at a time" rule: a
+    // queued follower can't take a ticket while the car ahead is still at/near
+    // the line. Crucially the leader is NOT excluded just because it's been
+    // released — only once it has *moved into the box* (zone != approaching)
+    // does the follower become frontmost, pull up to the line, stop, and claim
+    // its (now later) turn. So a cross car that stopped earlier always goes
+    // before the follower, instead of the whole lane streaming through behind
+    // the leader. No magic gap constant.
+    for (final v in samples) {
+      if (zone[v.id] != _Zone.approaching) continue;
+      if (_ticket.containsKey(v.id) || _granted.contains(v.id)) continue;
+      if (v.speed > kStopSpeedThreshold) continue;
+      final frontmost = !samples.any((o) =>
+          o.id != v.id &&
+          o.heading == v.heading &&
+          zone[o.id] == _Zone.approaching &&
+          gap[o.id]! < gap[v.id]!);
+      if (frontmost) {
+        final n = _ticketSeq++;
+        _ticket[v.id] = n;
+        if (kDebugMode) {
+          final who = v.id is NpcCar
+              ? 'NPC L${(v.id as NpcCar).laneIndex}'
+              : 'PLAYER';
+          debugPrint('[INTERSECTION] turn #$n → $who '
+              '(assigned on approach, at the line)');
+        }
+      }
+    }
+
+    // Cars that still block a conflicting waiter from starting: those committed
+    // to the box and not yet clear of the conflict point — a released car still
+    // heading in, or one in the box that hasn't passed the centre yet. A car
+    // that's past the centre is on its way out (so the next driver rolls as it
+    // clears, like real all-way-stop flow), and a car already *past* the box is
+    // no threat at all. (The old code kept an exited car blocking for its whole
+    // post-box traverse of the tile, so cross traffic waited far too long —
+    // sometimes until the waiting car was culled.)
+    final blockers = <Object>{
+      for (final v in samples)
+        // A player that has hesitated past the go threshold is demoted: it no
+        // longer blocks, so the cars waiting on it take their turn.
+        if (!(v.id == _playerId && demotePlayer) &&
+            ((zone[v.id] == _Zone.approaching && _granted.contains(v.id)) ||
+                (zone[v.id] == _Zone.inBox &&
+                    !_isClearing(v.heading, v.localPos, v.path))))
+          v.id,
+    };
+
+    // Eligible waiters: approaching, ticketed (i.e. have stopped), not already
+    // committed — released greedily in arrival order, never into a conflict.
+    final waiters = samples
+        .map((v) => v.id)
+        .where((id) =>
+            zone[id] == _Zone.approaching &&
+            _ticket.containsKey(id) &&
+            !blockers.contains(id) &&
+            // A demoted (hesitating) player forfeits its turn — it must not
+            // re-win the release with its early ticket and re-block the NPCs.
+            !(id == _playerId && demotePlayer))
+        .toList()
+      ..sort((a, b) => _ticket[a]!.compareTo(_ticket[b]!));
+
+    final pathById = {for (final v in samples) v.id: v};
+    final released = computeReleases(waiters, blockers, (a, b) {
+      final va = pathById[a]!, vb = pathById[b]!;
+      return _movementsConflict(va.heading, va.path, vb.heading, vb.path);
+    });
+    _granted.addAll(released.where((id) => zone[id] == _Zone.approaching));
+
+    // Per-NPC stopped-wait timer: count up only while a car is stopped at its
+    // line waiting (not while rolling up, not once released).
+    final stillWaiting = <Object>{};
+    for (final v in samples) {
+      if (v.id is! NpcCar) continue;
+      if (zone[v.id] == _Zone.approaching &&
+          !released.contains(v.id) &&
+          v.speed <= kStopSpeedThreshold) {
+        _npcWaitTime[v.id] = (_npcWaitTime[v.id] ?? 0.0) + dt;
+        stillWaiting.add(v.id);
+      }
+    }
+    _npcWaitTime.removeWhere((id, _) => !stillWaiting.contains(id));
+
+    // Headlight flash: while the player holds the right of way but sits still,
+    // ONE car waves it on — the single conflicting NPC next in line (earliest
+    // ticket), not the whole lane. And only when the box is physically clear
+    // (`!_otherCarInBox`), so a car is never waved into a still-busy
+    // intersection. The waiter must have itself stopped and waited a beat. (At
+    // the go threshold the player is demoted above, the NPCs are released, and
+    // the flashing naturally stops as they pull away.)
+    _playerWaiters.clear();
+    if (playerHesitating && !_otherCarInBox) {
+      final p = pathById[_playerId]!;
+      NpcCar? next;
+      int nextTicket = 1 << 30;
+      for (final v in samples) {
+        if (v.id is! NpcCar) continue;
+        if ((_npcWaitTime[v.id] ?? 0.0) < _npcFlashAfterStopSeconds) continue;
+        if (zone[v.id] != _Zone.approaching || released.contains(v.id)) continue;
+        if (!_movementsConflict(p.heading, p.path, v.heading, v.path)) continue;
+        final t = _ticket[v.id] ?? (1 << 30);
+        if (t < nextTicket) {
+          nextTicket = t;
+          next = v.id as NpcCar;
+        }
+      }
+      if (next != null) _playerWaiters.add(next);
+    }
+
+    // Which conflicting vehicles currently outrank the player? — those already
+    // crossing/released, or that stopped before the player did. If any exist
+    // the player must give way; crossing the line anyway is a fail-to-yield,
+    // and these are the drivers who get the red "!" marker.
+    final player = pathById[_playerId]!;
+    final pTicket = _ticket[_playerId];
+    _playerYieldTargets.clear();
+    for (final o in samples) {
+      if (o.id == _playerId) continue;
+      if (!_movementsConflict(player.heading, player.path, o.heading, o.path)) {
+        continue;
+      }
+      // A left-turning player may pull into the box and yield to oncoming
+      // traffic (the opposite approach, Heading.south) from within — entering
+      // isn't a fault. So oncoming cars (whether going straight or turning
+      // right into the same exit) don't trigger a fail-to-yield on a left turn;
+      // only actually colliding does. Cross-traffic still counts.
+      if (maneuver == Maneuver.left && o.heading == Heading.south) continue;
+      // A conflicting car that's already mostly through the box (past its
+      // centre) or gone is on its way out — pulling out behind it as it clears
+      // is normal, not a fail-to-yield. (Uses the lenient past-centre test, not
+      // the strict straight-only `_isClearing` used for NPC blocking, so a
+      // turner that's nearly out also stops counting against the player.)
+      final oz = zone[o.id];
+      if (oz == _Zone.past ||
+          (oz == _Zone.inBox && _pastBoxCentre(o.heading, o.localPos))) {
+        continue;
+      }
+      final ot = _ticket[o.id];
+      // Outranks the player if it's actively committed to the box (crossing /
+      // released), or — only when the player has itself taken a turn ticket — it
+      // took an earlier one. A player with NO ticket (never stopped) is NOT
+      // flagged by a merely-waiting car: that's the player's own stop fault, and
+      // flagging it too would spray "!" bubbles from every stopped cross-car on
+      // a rolling player — the over-sensitive penalty the user rejected. (A
+      // review finder flagged the narrow "rightful car blocked by a third car,
+      // player never stopped" under-report; kept suppressed on purpose.)
+      final outranks = released.contains(o.id) ||
+          (pTicket != null && ot != null && ot < pTicket);
+      if (outranks && o.id is NpcCar) _playerYieldTargets.add(o.id as NpcCar);
+    }
+    _playerShouldYield = _playerYieldTargets.isNotEmpty;
+    return released;
+  }
+
+  /// Set by [_arbitrateAllWayStop]: a conflicting vehicle has the right of way
+  /// over the player right now.
+  bool _playerShouldYield = false;
+
+  /// The NPCs that currently have the right of way over the player — the ones
+  /// that get a red "!" marker if the player fails to yield.
+  final List<NpcCar> _playerYieldTargets = [];
+
+  /// Set after arbitration: the arbiter has released the player to proceed.
+  bool _playerReleased = false;
 
   bool _playerMustWait = false;
 
@@ -497,21 +781,35 @@ class IntersectionTile extends TileBase {
   }
 
   bool _playerViolationFired = false;
-  bool _yieldLineCrossed = false;
+  bool _yieldViolationFired = false;
+  bool _stopLineCrossed = false;
   bool _clearedReported = false;
 
-  void _checkPlayerYield(
+  /// Whether the player came to a complete stop during the approach, and the
+  /// slowest speed seen (for the fault message). Tracked across the whole
+  /// approach window — not just the instant of crossing — so a stop made a
+  /// little before the line, or an early stop followed by a creep, still counts.
+  bool _cameToStop = false;
+  double _minApproachSpeed = double.infinity;
+
+  void _checkPlayerStop(
     PlayerCar playerCar,
     List<_VehicleSample> samples,
   ) {
     final playerLocal = worldToLocal(playerCar.position);
     final localY = playerLocal.y;
 
-    // Fresh approach — well south of the line.
-    if (localY > _playerStopLineY + 60) {
+    // Genuinely far south of the box — reset the whole approach state. Reset at
+    // the approach distance (not a few units before the line) so the stop
+    // credit spans the entire run-up to the sign.
+    if (localY > _playerStopLineY + _approachDistance) {
       _playerViolationFired = false;
-      _yieldLineCrossed = false;
+      _yieldViolationFired = false;
+      _stopLineCrossed = false;
       _clearedReported = false;
+      _cameToStop = false;
+      _playerDemoted = false;
+      _minApproachSpeed = double.infinity;
       return;
     }
 
@@ -528,25 +826,70 @@ class IntersectionTile extends TileBase {
       return;
     }
 
-    // The painted line is the yield decision point — evaluated once as the
-    // player crosses it. It's a yield, not a mandatory stop: crossing fast is
-    // only a violation when the right-of-way rules actually required the
-    // player to give way at that moment.
-    if (!_yieldLineCrossed && localY <= _playerStopLineY) {
-      _yieldLineCrossed = true;
+    // While approaching the line, watch for a complete stop and remember the
+    // slowest speed for the fault message. The stop only *counts* when made
+    // near the line (within [_stopCreditWindow]) — a stop made far back in the
+    // run-up then accelerating through the painted line is a rolling stop, not a
+    // legal one. The window is generous enough to credit a car stopped with its
+    // nose at the line (centre ~kCarLength/2 + setback behind it) and a short
+    // creep, but not a stop a few car-lengths early.
+    if (!_stopLineCrossed) {
+      _minApproachSpeed = math.min(_minApproachSpeed, playerCar.speed);
+      if (playerCar.speed <= kStopSpeedThreshold &&
+          localY <= _playerStopLineY + _stopCreditWindow) {
+        _cameToStop = true;
+      }
+    }
+
+    // The painted line is the decision point — evaluated once as the player
+    // crosses it. Two independent faults can be raised here:
+    //   - stop-sign: no complete stop was made (mandatory regardless of
+    //     traffic — the whole all-way-stop lesson);
+    //   - fail-to-yield: the player crossed while a conflicting car had the
+    //     right of way (in the box, or it stopped first), so it should have
+    //     waited its turn. Only meaningful when there *is* traffic to yield to.
+    if (!_stopLineCrossed && localY <= _playerStopLineY) {
+      _stopLineCrossed = true;
       scenario.onPlayerPassedYieldLine(playerCar.speed);
 
-      final threatened = _mustGiveWay(
-          Heading.north, playerPaths.first, maneuver, playerLocal, samples);
-      if (threatened &&
-          playerCar.speed > kYieldSpeedThreshold &&
-          !_playerViolationFired) {
+      if (!_cameToStop && !_playerViolationFired) {
         _playerViolationFired = true;
-        debugPrint('[INTERSECTION] yield violation @ stop line: '
+        debugPrint('[INTERSECTION] stop-sign violation @ line: '
+            'minSpeed=${_minApproachSpeed.toStringAsFixed(0)}');
+        GameBus.instance.emit(
+            StopSignViolationEvent(minSpeedObserved: _minApproachSpeed));
+      }
+
+      if (_playerShouldYield && !_playerReleased && !_yieldViolationFired) {
+        _yieldViolationFired = true;
+        debugPrint('[INTERSECTION] fail-to-yield @ line: '
             'speed=${playerCar.speed.toStringAsFixed(0)}');
         GameBus.instance
             .emit(YieldViolationEvent(speedAtLine: playerCar.speed));
+        _markYieldTargets(playerCar);
       }
+    }
+  }
+
+  /// Drop a red "!" marker on every driver that had the right of way when the
+  /// player crossed out of turn. Added to the tile's parent — the world — so
+  /// each bubble lives in world space and follows its NPC, exactly like the
+  /// cut-off reaction. The marker is locked to the direction the player drives
+  /// *through this box* — i.e. the tile's local "north" (−y) rotated into world
+  /// space by the tile's placement, so it reads correctly even when the
+  /// intersection is placed rotated (downstream of a turn).
+  void _markYieldTargets(PlayerCar playerCar) {
+    final world = parent;
+    if (world == null) return;
+    final northWorld = directionToWorld(Vector2(0, -1));
+    final northAngle = math.atan2(northWorld.y, northWorld.x);
+    for (final npc in _playerYieldTargets) {
+      world.add(ReactionBubble(
+        target: npc,
+        player: playerCar,
+        reaction: DriverReaction.failedToYield,
+        fixedAngle: northAngle,
+      ));
     }
   }
 
@@ -563,8 +906,124 @@ class IntersectionTile extends TileBase {
     _drawIntersectionBox(canvas);
     _drawMarkings(canvas);
     _drawStopLines(canvas);
+    _drawStopSigns(canvas);
     debugRenderSplines(canvas);
+    if (kDebugMode) _drawDebugTurns(canvas);
   }
+
+  /// Player's tile-local position, cached each frame for the debug overlay.
+  Vector2? _debugPlayerLocal;
+
+  /// DEBUG: floats each vehicle's **place in line** beside it — 1 = next to go,
+  /// 2 = after that … — or "GO" once released. This is the rank among the cars
+  /// currently holding a turn ticket (not the raw global ticket counter, which
+  /// climbs forever as cars respawn), so it stays small and intuitive. Tickets
+  /// are claimed on *approach* (a car stopped frontmost at the line), never at
+  /// spawn; this overlay makes the order observable.
+  void _drawDebugTurns(Canvas canvas) {
+    // Rank everyone still waiting (ticketed, not yet released) by arrival.
+    final waiting = _ticket.keys.where((id) => !_granted.contains(id)).toList()
+      ..sort((a, b) => _ticket[a]!.compareTo(_ticket[b]!));
+    final place = {for (int i = 0; i < waiting.length; i++) waiting[i]: i + 1};
+
+    for (final npc in npcs) {
+      _drawTurnLabel(canvas, worldToLocal(npc.position), place[npc],
+          _granted.contains(npc), isPlayer: false);
+    }
+    final pl = _debugPlayerLocal;
+    if (pl != null) {
+      _drawTurnLabel(canvas, pl, place[_playerId], _playerReleased,
+          isPlayer: true);
+    }
+  }
+
+  void _drawTurnLabel(Canvas canvas, Vector2 pos, int? place, bool go,
+      {required bool isPlayer}) {
+    final String text;
+    final Color color;
+    if (go) {
+      text = isPlayer ? 'YOU GO' : 'GO';
+      color = const Color(0xFF4CAF50);
+    } else if (place != null) {
+      text = isPlayer ? 'YOU $place' : '$place';
+      color = const Color(0xFFFFD600);
+    } else {
+      return; // hasn't claimed a turn yet
+    }
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: color,
+          fontSize: 16,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    // Just off the car's right side (tile-local +x), vertically centred.
+    final left = Offset(pos.x + 20, pos.y - tp.height / 2);
+    final bg = Rect.fromLTWH(left.dx - 4, left.dy - 2, tp.width + 8, tp.height + 4);
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(bg, const Radius.circular(4)),
+      Paint()..color = const Color(0xCC000000),
+    );
+    tp.paint(canvas, left);
+  }
+
+  /// Radius of the red octagonal STOP signs.
+  static const double _signRadius = 30.0;
+
+  /// One STOP sign per approach, on the right-hand pavement of the entering
+  /// lane, level with that approach's stop line — the signal that this junction
+  /// demands a full stop.
+  void _drawStopSigns(Canvas canvas) {
+    final outX = _cx + kRoadWidth / 2 + kPavementWidth / 2; // right pavement
+    final outY = _cy + kRoadWidth / 2 + kPavementWidth / 2;
+    final lineGap = _halfBox + _stopLineGap;
+    // S approach (N-bound, right = +x); N approach (S-bound, right = -x);
+    // W approach (E-bound, right = +y); E approach (W-bound, right = -y).
+    _drawStopSign(canvas, Offset(outX, _cy + lineGap));
+    _drawStopSign(canvas, Offset(kTileSize - outX, _cy - lineGap));
+    _drawStopSign(canvas, Offset(_cx - lineGap, outY));
+    _drawStopSign(canvas, Offset(_cx + lineGap, kTileSize - outY));
+  }
+
+  void _drawStopSign(Canvas canvas, Offset center) {
+    const r = _signRadius;
+    final octagon = Path();
+    for (int i = 0; i < 8; i++) {
+      final a = (22.5 + 45.0 * i) * math.pi / 180.0;
+      final p = Offset(center.dx + r * math.cos(a), center.dy + r * math.sin(a));
+      i == 0 ? octagon.moveTo(p.dx, p.dy) : octagon.lineTo(p.dx, p.dy);
+    }
+    octagon.close();
+    canvas.drawPath(octagon, Paint()..color = const Color(0xFFD32F2F));
+    canvas.drawPath(
+        octagon,
+        Paint()
+          ..color = const Color(0xFFFFFFFF)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 3);
+
+    final tp = _stopText;
+    tp.paint(canvas, center - Offset(tp.width / 2, tp.height / 2));
+  }
+
+  /// The constant "STOP" label — laid out once and reused across every sign and
+  /// frame (the text/style never change), instead of rebuilding 4×/frame.
+  static final TextPainter _stopText = TextPainter(
+    text: const TextSpan(
+      text: 'STOP',
+      style: TextStyle(
+        color: Color(0xFFFFFFFF),
+        fontSize: 15,
+        fontWeight: FontWeight.w900,
+        letterSpacing: 0.5,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+  )..layout();
 
   void _drawGround(Canvas canvas) {
     canvas.drawRect(
@@ -705,11 +1164,16 @@ enum _Zone { far, approaching, inBox, past }
 
 class _VehicleSample {
   _VehicleSample({
+    required this.id,
     required this.heading,
     required this.path,
     required this.localPos,
     required this.speed,
   });
+
+  /// Stable identity for arrival-order bookkeeping: the [NpcCar] instance, or
+  /// [IntersectionTile._playerId] for the player.
+  final Object id;
 
   /// Travel heading on the approach.
   final Heading heading;

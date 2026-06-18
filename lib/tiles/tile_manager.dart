@@ -303,6 +303,10 @@ class TileManager extends Component {
         // signal so it doesn't carry onto the next tile (only the merge tile
         // ever sets it, so nothing would otherwise clear it).
         npc.brain.signalLeftForMerge = false;
+        // Likewise, drop any intersection-only transient cues so they can't
+        // stick onto the next tile (which never manages them).
+        npc.brain.speedCap = null;
+        npc.setHeadlightFlash(false);
         tile.npcs.remove(npc);
         next.tile.npcs.add(npc);
         continue;
@@ -468,19 +472,26 @@ class TileManager extends Component {
 
   /// The lane-continuous free-drive pick (pure; the source of truth the chain
   /// test drives). Candidates are the spawnable tiles whose entry seam matches
-  /// [prevType]'s exit lane count; if [prevType] is itself a connector they're
-  /// narrowed to plain roads so two connectors never chain back-to-back.
+  /// [prevType]'s exit lane count. If [prevType] *interrupts* the drive — a
+  /// connector (lane transition) or a junction (intersection) — the candidates
+  /// are narrowed to plain roads, so two interrupting tiles never chain
+  /// back-to-back: the player always gets a normal stretch between them and is
+  /// never asked to stop at two intersections in a row.
   @visibleForTesting
   static TileType pickFreeDriveType(TileType prevType, Random rng) {
     final exitLanes = TileRegistry.exitLanesOf(prevType);
     var candidates = TileRegistry.spawnableWithEntryLanes(exitLanes);
-    if (TileRegistry.isConnector(prevType)) {
-      final roads =
-          candidates.where((t) => !TileRegistry.isConnector(t)).toList();
+    if (_interrupts(prevType)) {
+      final roads = candidates.where((t) => !_interrupts(t)).toList();
       if (roads.isNotEmpty) candidates = roads;
     }
     return candidates[rng.nextInt(candidates.length)];
   }
+
+  /// A tile that breaks up a plain drive — a lane-transition connector or a
+  /// junction. Two of these are never placed back-to-back.
+  static bool _interrupts(TileType type) =>
+      TileRegistry.isConnector(type) || TileRegistry.isJunction(type);
 
   // ---------------------------------------------------------------------------
   // NPC culling

@@ -216,12 +216,25 @@ const double kReactCooldownSeconds = 4.0;
 /// Only react when the NPC is roughly on-screen — no feedback for cars the
 /// player can't see. Sized to the visible radius (see [kCameraZoom]).
 const double kReactMaxDistance = 760.0;
+/// A cut-off is a *same-direction* (same-lane) interaction: only blame the
+/// player when its heading is within this of the NPC's. A turning NPC or
+/// cross-traffic, whose heading diverges past this, is braking for its own path
+/// — not because the player cut in. ~40°.
+const double kReactMaxHeadingDelta = 0.7;
+/// A cut-off is a *fresh* intrusion — the player just moved into the NPC's
+/// path. If the player has been ahead in that lane longer than this, the NPC is
+/// merely catching up / following (e.g. it rolls up behind a player waiting at
+/// a stop), which is the NPC's business, not the player's fault.
+const double kReactCutInWindowSeconds = 1.2;
 
 // ---------------------------------------------------------------------------
 // Indicator blink
 // ---------------------------------------------------------------------------
 const double kIndicatorBlinkPeriod = 0.5; // seconds per on/off cycle
 const double kIndicatorSignalDistance = 150.0; // units before turn → start blinking
+/// Headlight courtesy-flash on/off cycle (quicker than a turn signal) — an NPC
+/// flashing a hesitating player at an all-way stop to wave them on.
+const double kHeadlightFlashPeriod = 0.18;
 
 // ---------------------------------------------------------------------------
 // Camera

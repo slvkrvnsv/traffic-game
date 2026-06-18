@@ -22,9 +22,15 @@ class ExamErrorRecorder extends Component {
 
   final List<StreamSubscription<GameEvent>> _subs = [];
 
+  /// Bus generation this recorder belongs to; once stale it's a leaked listener
+  /// from a restarted game and must not record (else one event is logged once
+  /// per leaked recorder — the "12 stop faults for one miss" bug). See [GameBus].
+  int _gen = 0;
+
   @override
   void onMount() {
     super.onMount();
+    _gen = GameBus.instance.generation;
     _log.startRun();
 
     // Failed scenario tasks — RuleValidator does the context-aware grading and
@@ -55,6 +61,7 @@ class ExamErrorRecorder extends Component {
   }
 
   void _record(ExamErrorType type, {double? speed, String? detail}) {
+    if (_gen != GameBus.instance.generation) return; // leaked recorder
     final tile = tileManager.activeTile;
     _log.record(ExamError(
       type: type,

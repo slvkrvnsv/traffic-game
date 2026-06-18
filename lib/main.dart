@@ -11,6 +11,7 @@ import 'tiles/definitions/lane_transition_tile.dart';
 import 'tiles/definitions/intersection_tile.dart';
 import 'tiles/definitions/start_tile.dart';
 import 'traffic_game.dart';
+import 'ui/fault_log_hud.dart';
 import 'ui/game_over_overlay.dart';
 import 'ui/main_menu.dart';
 import 'ui/maneuver_hud.dart';
@@ -132,6 +133,7 @@ class _GameScreenState extends State<GameScreen> {
           ),
           const HudControls(),
           const SpeedometerHud(),
+          const FaultLogHud(),
           const ManeuverHud(),
         ],
       ),

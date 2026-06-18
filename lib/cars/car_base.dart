@@ -62,6 +62,23 @@ abstract class CarBase extends PositionComponent with SplineFollower {
   bool get leftIndicatorVisible => _leftIndicator && _indicatorBlinkState;
   bool get rightIndicatorVisible => _rightIndicator && _indicatorBlinkState;
 
+  // Headlight courtesy flash — set on each frame by a tile (e.g. an NPC waving
+  // a hesitating player through an all-way stop). Blinks on its own timer.
+  bool _headlightFlash = false;
+  double _flashTimer = 0.0;
+  bool _flashOn = false;
+
+  bool get headlightFlashVisible => _headlightFlash && _flashOn;
+
+  void setHeadlightFlash(bool on) {
+    if (on && !_headlightFlash) {
+      _flashOn = true; // start lit
+      _flashTimer = 0.0;
+    }
+    _headlightFlash = on;
+    if (!on) _flashOn = false;
+  }
+
   void setLeftIndicator(bool on) {
     if (on && !_leftIndicator) _restartBlink(); // off → on: clean first flash
     _leftIndicator = on;
@@ -86,6 +103,7 @@ abstract class CarBase extends PositionComponent with SplineFollower {
     super.update(dt);
     _updateMotion(dt);
     _updateIndicatorBlink(dt);
+    _updateHeadlightFlash(dt);
     _updateWheels(dt);
   }
 
@@ -135,6 +153,15 @@ abstract class CarBase extends PositionComponent with SplineFollower {
     }
   }
 
+  void _updateHeadlightFlash(double dt) {
+    if (!_headlightFlash) return;
+    _flashTimer += dt;
+    if (_flashTimer >= kHeadlightFlashPeriod) {
+      _flashTimer -= kHeadlightFlashPeriod;
+      _flashOn = !_flashOn;
+    }
+  }
+
   void _updateWheels(double dt) {
     // Steer wheels toward tangent angle change (visual only)
     if (spline != null && speed > 5) {
@@ -170,6 +197,7 @@ abstract class CarBase extends PositionComponent with SplineFollower {
       def: definition,
       leftIndicatorOn: leftIndicatorVisible,
       rightIndicatorOn: rightIndicatorVisible,
+      headlightFlash: headlightFlashVisible,
       wheelSteerAngle: _wheelSteerAngle,
     );
     if (kDebugMode) _debugRenderObb(canvas);

@@ -117,6 +117,16 @@ class GameBus {
 
   Stream<GameEvent> get stream => _controller.stream;
 
+  /// Monotonic id of the current game. The bus is a singleton that outlives a
+  /// game restart, so listeners from a previous game can leak (their host
+  /// components aren't always disposed by the widget swap). Each new world
+  /// bumps this; per-game listeners snapshot it and go inert once stale, so a
+  /// single event can't be handled once per leaked game (e.g. a stop fault
+  /// recorded N times after N retries).
+  int _generation = 0;
+  int get generation => _generation;
+  void newGeneration() => _generation++;
+
   void emit(GameEvent event) => _controller.add(event);
 
   /// Filtered stream for a specific event type.

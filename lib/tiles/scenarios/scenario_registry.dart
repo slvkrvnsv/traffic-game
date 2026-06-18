@@ -1,7 +1,7 @@
 import 'dart:math';
 import 'scenario_base.dart';
 import 'free_drive_scenario.dart';
-import 'yield_scenario.dart';
+import 'stop_sign_scenario.dart';
 import 'merge_scenario.dart';
 import '../tile_registry.dart';
 
@@ -17,8 +17,8 @@ class ScenarioRegistry {
       () => FreeDriveScenario(),
     ],
     TileType.intersection4way: [
-      () => YieldScenario(),
-      // Future: () => StopSignScenario(), () => TrafficLightScenario(),
+      () => StopSignScenario(),
+      // Future: () => TrafficLightScenario(),
     ],
     // 2→1 merge: graded only when the player is in the ending (right) lane —
     // see MergeScenario. The extend tile (1→2) has nothing to grade.

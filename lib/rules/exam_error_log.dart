@@ -26,6 +26,10 @@ class ExamErrorLog {
   final List<ExamError> _all = [];
   String _currentRunId = '';
 
+  /// Live count of faults recorded in the current run — drives the HUD counter.
+  /// Bumped on [record], reset on [startRun].
+  final ValueNotifier<int> currentRunCount = ValueNotifier<int>(0);
+
   /// Full persisted history (oldest first).
   List<ExamError> get all => List.unmodifiable(_all);
 
@@ -50,6 +54,7 @@ class ExamErrorLog {
   /// from now on are grouped under this run id.
   void startRun() {
     _currentRunId = DateTime.now().toIso8601String();
+    currentRunCount.value = 0;
   }
 
   void record(ExamError error) {
@@ -57,6 +62,7 @@ class ExamErrorLog {
     if (_all.length > _maxStoredErrors) {
       _all.removeRange(0, _all.length - _maxStoredErrors);
     }
+    currentRunCount.value = currentRunErrors.length;
     debugPrint('[EXAM] error: ${error.type.name} on ${error.tileType}'
         '${error.maneuver != null ? ' (${error.maneuver!.name})' : ''}'
         '  run total=${currentRunErrors.length}');

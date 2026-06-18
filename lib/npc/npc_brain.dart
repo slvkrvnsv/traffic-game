@@ -39,6 +39,11 @@ class NpcBrain {
   /// at. Set by the tile each frame; null when there is nothing to stop for.
   double? stopTargetDistance;
 
+  /// Tile-imposed maximum speed (e.g. a calm speed while crossing an
+  /// intersection box, so a car eases out of a stop instead of flooring it).
+  /// Null = no cap. Cleared by the tile when it no longer applies.
+  double? speedCap;
+
   /// Human-readable state name for debug display.
   String get stateName => _state.runtimeType.toString().replaceFirst('State', '');
 
@@ -67,6 +72,9 @@ class NpcBrain {
     desiredSpeed = _applyCurveSpeed(desiredSpeed, car);
     // Then bring us to a precise halt at any mandatory stop line.
     desiredSpeed = _applyStopTarget(desiredSpeed);
+    // A tile-imposed cap (calm intersection crossing) limits the top speed but
+    // never raises it — a gentle pull-out, not a launch.
+    if (speedCap != null && desiredSpeed > speedCap!) desiredSpeed = speedCap!;
     _transition(car, sensors);
     _updateIndicators(car);
   }

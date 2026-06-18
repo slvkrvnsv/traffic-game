@@ -5,6 +5,7 @@ import '../core/game_bus.dart';
 import '../cars/npc_car.dart';
 import '../cars/player_car.dart';
 import '../tiles/tile_manager.dart';
+import '../tiles/tile_registry.dart';
 import 'driver_reaction.dart';
 import 'reaction_bubble.dart';
 
@@ -13,6 +14,11 @@ import 'reaction_bubble.dart';
 class _ReactState {
   double cooldown = 0.0;
   bool hardBraking = false;
+
+  /// How long the player has *continuously* been ahead in this NPC's lane. A
+  /// genuine cut-off is a fresh intrusion (small value); a car the player has
+  /// been ahead of all along is just catching up (large value → not a cut-off).
+  double timeInPath = 0.0;
 }
 
 /// Detects when the player forces an NPC into a hard brake (e.g. cutting in on
@@ -38,11 +44,34 @@ class DriverReactionDetector extends Component {
 
   @override
   void update(double dt) {
+    // At an intersection the right-of-way (fail-to-yield) is graded by the
+    // intersection tile itself; the generic cut-off detector only adds false
+    // positives there — most visibly a car that streams in and barrels up
+    // behind the player while it waits its turn (a fresh NPC defeats the
+    // per-NPC freshness gate). So it's suppressed on the intersection tile.
+    if (tileManager.activeTile?.tileType == TileType.intersection4way) {
+      return;
+    }
     for (final npc in tileManager.allNpcs) {
       final state = _states[npc] ??= _ReactState();
       if (state.cooldown > 0) state.cooldown -= dt;
 
-      final hardNow = _isForcedHardBrake(npc);
+      // Track how long the player has been *settled* ahead in this lane, to
+      // tell a fresh cut-in/merge apart from a car catching up to a player
+      // that's been ahead all along (the rear-approach false positive). Only
+      // accrue while the player is squarely in the lane; while it's still
+      // moving laterally across into it (a merge/cut-in) the timer stays at 0,
+      // so the intrusion reads as fresh and merge grading still fires. NOTE: a
+      // review finder flagged that `lateral` (projected off the NPC's straight
+      // tangent) inflates on curves, which can defeat this gate on a bend — but
+      // widening the threshold risks gating the merge cut-off (and merge grading
+      // has no detector-path test), so the proper fix is a curve-aware lateral
+      // (project against the NPC's spline), not a threshold nudge. Left tight.
+      final info = _playerAheadInfo(npc);
+      final settled = info != null && info.lateral < kCarWidth * 0.6;
+      state.timeInPath = settled ? state.timeInPath + dt : 0.0;
+
+      final hardNow = _isForcedHardBrake(npc, state.timeInPath);
       // Rising edge only: fire as the NPC is pushed into hard braking, once.
       if (hardNow && !state.hardBraking && state.cooldown <= 0) {
         _react(npc, DriverReaction.cutOff);
@@ -55,8 +84,22 @@ class DriverReactionDetector extends Component {
   /// True when the player is the close obstacle ahead of [npc] in its lane and
   /// the deceleration the NPC needs to avoid the player exceeds the hard-brake
   /// threshold — i.e. the player cut in / brake-checked it.
-  bool _isForcedHardBrake(NpcCar npc) {
+  bool _isForcedHardBrake(NpcCar npc, double timeInPath) {
     if (npc.speed < kReactMinSpeed) return false;
+    // A cut-off is an *active*, *fresh* same-lane intrusion by a moving player.
+    // Guards against blaming the player for a brake it didn't cause:
+    //  - a stopped / yielding player isn't cutting anyone off;
+    //  - an NPC turning (or cross-traffic), heading diverging from the player's,
+    //    is braking for its own path, not because the player cut in;
+    //  - a car the player has been ahead of all along (timeInPath large) is
+    //    just catching up / following — the player waiting at a stop while a
+    //    fast car rolls up from behind is the classic false positive.
+    if (playerCar.speed < kReactMinSpeed) return false;
+    if (math.cos(playerCar.splineAngle - npc.angle) <
+        math.cos(kReactMaxHeadingDelta)) {
+      return false;
+    }
+    if (timeInPath > kReactCutInWindowSeconds) return false;
     if (npc.position.distanceTo(playerCar.position) > kReactMaxDistance) {
       return false;
     }
@@ -79,14 +122,20 @@ class DriverReactionDetector extends Component {
 
   /// Bumper-to-bumper gap to the player if the player is ahead of [npc] and in
   /// the same lane, else null. Mirrors [TileBase] lead-car geometry.
-  double? _playerGapAhead(NpcCar npc) {
+  double? _playerGapAhead(NpcCar npc) => _playerAheadInfo(npc)?.gap;
+
+  /// Gap *and* the player's lateral offset from this NPC's lane axis, if the
+  /// player is ahead and within the lane, else null. The lateral lets the
+  /// caller tell a player squarely settled in the lane (a rear-approach) from
+  /// one still moving across into it (a merge / cut-in).
+  ({double gap, double lateral})? _playerAheadInfo(NpcCar npc) {
     final forward = Vector2(math.cos(npc.angle), math.sin(npc.angle));
     final delta = playerCar.position - npc.position;
     final fwd = delta.dot(forward);
     if (fwd < kCarLength * 0.5) return null; // behind or overlapping
     final lateral = (delta - forward * fwd).length;
     if (lateral > kCarWidth * 1.8) return null; // different lane
-    return (fwd - kCarLength).clamp(0.0, double.infinity);
+    return (gap: (fwd - kCarLength).clamp(0.0, double.infinity), lateral: lateral);
   }
 
   void _react(NpcCar npc, DriverReaction reaction) {
