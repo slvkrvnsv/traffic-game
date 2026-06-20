@@ -634,6 +634,10 @@ class IntersectionTile extends TileBase {
 
     // Player stop-sign violation detection.
     _checkPlayerStop(playerCar, samples, pedestrians);
+
+    // Pedestrian give-way fault — evaluated separately so it also covers the EXIT
+    // crossings, which sit outside the box (where [_checkPlayerStop] bails).
+    _checkPedestrianGiveWay(playerCar, pedestrians);
   }
 
   /// Sentinel identity for the player in the arrival-order bookkeeping.
@@ -1082,7 +1086,6 @@ class IntersectionTile extends TileBase {
 
   bool _playerViolationFired = false;
   bool _yieldViolationFired = false;
-  bool _pedYieldFired = false;
   bool _stopLineCrossed = false;
   bool _clearedReported = false;
 
@@ -1093,41 +1096,56 @@ class IntersectionTile extends TileBase {
   bool _cameToStop = false;
   double _minApproachSpeed = double.infinity;
 
+  /// Whether the player's car is physically ON zebra band [idx] — i.e. it has
+  /// driven onto (committed to) that crossing. Samples three points along the car
+  /// (nose, centre, tail), so the whole time any part of the car straddles the
+  /// thin band counts, not just the instant its centre is on it. This replaces a
+  /// single nose-point test, whose window was a few frames for a fast car.
+  bool _playerOnBand(PlayerCar playerCar, int idx) {
+    final fwd = Vector2(math.cos(playerCar.angle), math.sin(playerCar.angle));
+    for (final s in const [kCarLength / 2, 0.0, -kCarLength / 2]) {
+      if (_zebraIndexOf(worldToLocal(playerCar.position + fwd * s)) == idx) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// The crossing pedestrian the player is failing to give way to, or null — the
-  /// basis for the give-way fault. Combines BOTH yield signals (a ped triggers it
-  /// either way):
+  /// basis for the give-way fault. The rule, in the user's words: a pedestrian in
+  /// the zebra's BOUNDING BOX who is MOVING THE PLAYER'S WAY, when the player goes
+  /// instead of yielding. Two signals, OR'd (a ped triggers it either way):
   ///   (a) PROXIMITY — the ped is in the player's personal-space bubble
   ///       ([Pedestrian.startledByPlayer], car body within [kPedPersonalSpace]).
-  ///       Covers a ped right in the player's path, including dead-centre of the
-  ///       lane where the direction test in (b) degenerates.
-  ///   (b) THE ZEBRA CROSSING — the player's nose is committed onto a zebra band
-  ///       (a yielding car stops BEHIND it) and a ped on that band is in the
-  ///       player's lane AND still walking TOWARD the player's path ("the player's
-  ///       way"). Catches cutting in front of a ped who started across from the
-  ///       far side with a gap, which proximity alone misses.
-  /// Excluded by construction: pass-behind (the ped walks off the player's lane,
-  /// so (b)'s direction test is negative and it's outside (a)'s bubble), and a ped
-  /// far on the other half (outside the lane scope). The caller gates on the
-  /// player MOVING — a stopped, yielding car can't fail to yield.
+  ///       Covers a ped dead in the path, where the direction test degenerates.
+  ///   (b) THE ZEBRA BOX — the player has driven onto the SAME band the ped is on
+  ///       ([_playerOnBand]: committed to the crossing; a yielder stops BEHIND it)
+  ///       and the ped is walking TOWARD the player ("the player's way").
+  /// This deliberately uses the FULL band as the zone — NOT a lane-width corridor.
+  /// The old corridor (`perp <= kPedYieldLateral`) excluded a ped crossing from
+  /// the OTHER half until it had nearly reached the player's lane (the road is
+  /// ~2× that corridor wide), so two pedestrians walking in from the far side —
+  /// exactly the reported miss — never registered. The direction test is now
+  /// "walking toward the player" (`pedFwd · (player − ped) > 0`), which does NOT
+  /// sign-flip as the ped crosses the lane centre (the old `perp`-based test did,
+  /// dropping the ped right as it entered the path). Pass-behind (a ped walking
+  /// AWAY toward the far curb) gives a negative dot → excluded; a stopped player
+  /// can't fail (the caller gates on MOVING); a ped on a perpendicular crossing
+  /// has a different band index → excluded. Hitting one is a separate collision.
   Pedestrian? _playerCuttingOffPed(
       PlayerCar playerCar, List<Pedestrian> pedestrians) {
     if (pedestrians.isEmpty) return null;
-    final fwd = Vector2(math.cos(playerCar.angle), math.sin(playerCar.angle));
-    final noseOnCrossing = _pedOnZebra(
-            worldToLocal(playerCar.position + fwd * (kCarLength / 2))) ||
-        _pedOnZebra(worldToLocal(playerCar.position));
     for (final ped in pedestrians) {
-      if (!_pedOnZebra(worldToLocal(ped.position))) continue;
+      final idx = _zebraIndexOf(worldToLocal(ped.position));
+      if (idx < 0) continue; // not on any crossing
       // (a) Proximity — right in the player's way (also the dead-centre case).
       if (ped.startledByPlayer) return ped;
-      // (b) The zebra crossing — committed onto the band, ped in the lane and
-      // still walking toward the player's path.
-      if (!noseOnCrossing) continue;
-      final d = ped.position - playerCar.position;
-      final perp = d - fwd * d.dot(fwd); // offset from the player's lane line
-      if (perp.length > kPedYieldLateral) continue; // not in the player's lane
+      // (b) The zebra box — the player drove onto the ped's crossing and the ped
+      // is walking toward the player.
+      if (!_playerOnBand(playerCar, idx)) continue;
+      final toPlayer = playerCar.position - ped.position;
       final pedFwd = Vector2(math.cos(ped.angle), math.sin(ped.angle));
-      if (pedFwd.dot(-perp) > 0) return ped; // coming the player's way
+      if (pedFwd.dot(toPlayer) > 0) return ped; // coming the player's way
     }
     return null;
   }
@@ -1146,7 +1164,6 @@ class IntersectionTile extends TileBase {
     if (localY > _playerStopLineY + _approachDistance) {
       _playerViolationFired = false;
       _yieldViolationFired = false;
-      _pedYieldFired = false;
       _stopLineCrossed = false;
       _clearedReported = false;
       _cameToStop = false;
@@ -1211,39 +1228,49 @@ class IntersectionTile extends TileBase {
         _markYieldTargets(playerCar);
       }
     }
+  }
 
-    // Failed to give way to a pedestrian — FAILED-TO-YIELD via the zebra
-    // crossing. [_playerCuttingOffPed] finds a pedestrian the player drove a
-    // crossing in front of: on a zebra the player is committed to (nose on the
-    // band), in the player's lane, and still heading INTO the player's path ("the
-    // player's way"). Gated on the player MOVING — a stopped, yielding car can't
-    // fail. This is what the personal-space-only fault missed: cutting in front
-    // of a pedestrian who started across from the far side (e.g. a right-turn
-    // exit crossing) with more than a car's-width gap never tripped the 20u
-    // bubble, so it never faulted. Pass-behind (ped walking off the player's
-    // lane), a far ped on the other half, and a clean stop are all excluded by
-    // construction. Hitting one is a separate, fatal collision. Once per approach.
-    if (!_pedYieldFired && playerCar.speed > kStopSpeedThreshold) {
-      final cutOff = _playerCuttingOffPed(playerCar, pedestrians);
-      if (cutOff != null) {
-        _pedYieldFired = true;
-        debugPrint('[INTERSECTION] failed to give way to pedestrian '
-            '(cut across their crossing): '
-            'speed=${playerCar.speed.toStringAsFixed(0)}');
-        GameBus.instance
-            .emit(PedestrianYieldViolationEvent(speedAtLine: playerCar.speed));
-        // Show the ped reacting even on a GAP cut-off, where the proximity
-        // startle (TileManager) didn't fire because the car never got within
-        // kPedPersonalSpace — so a logged fault always has a visible "!".
-        final world = parent;
-        if (world != null && !cutOff.startledByPlayer) {
-          world.add(ReactionBubble(
-            target: cutOff,
-            player: playerCar,
-            reaction: DriverReaction.failedToYield,
-          ));
-        }
-      }
+  /// Pedestrians the player has already been faulted for cutting off this run, so
+  /// each crossing logs ONE give-way fault instead of one per frame. Pruned to
+  /// live pedestrians every frame — a culled crosser drops out, a fresh crosser
+  /// is a new identity — so it stays small without a per-traversal reset.
+  final Set<Pedestrian> _gaveWayFaulted = {};
+
+  /// Failed-to-give-way to a crossing pedestrian — logged INDEPENDENTLY of the
+  /// stop-sign approach state machine in [_checkPlayerStop]. The crossings sit
+  /// OUTSIDE the conflict box (all four approaches: the zebra bands span ~120–156
+  /// from centre, the box edge is at [_halfBox]=80), so every EXIT crossing of a
+  /// turn/straight maneuver happens after [_playerExitedBox] is already true.
+  /// [_checkPlayerStop] early-returns there (correctly, for the stop line), which
+  /// silently dropped every exit-crossing fault — the bug where the startle "!"
+  /// popped (TileManager, global) but nothing reached the faults log. So this runs
+  /// every frame instead: [_playerCuttingOffPed] is already scoped to this tile's
+  /// zebra bands, and the player-MOVING gate keeps a stopped, yielding car clean.
+  /// [_playerCuttingOffPed] combines BOTH yield signals (proximity bubble + the
+  /// zebra-crossing direction test); deduped per pedestrian so each crossing of a
+  /// traversal (entry near-side and an exit) faults at most once.
+  void _checkPedestrianGiveWay(
+      PlayerCar playerCar, List<Pedestrian> pedestrians) {
+    _gaveWayFaulted.retainWhere(pedestrians.contains); // drop culled crossers
+    if (playerCar.speed <= kStopSpeedThreshold) return; // stopped = yielding
+    final cutOff = _playerCuttingOffPed(playerCar, pedestrians);
+    if (cutOff == null || !_gaveWayFaulted.add(cutOff)) return; // already faulted
+    debugPrint('[INTERSECTION] failed to give way to pedestrian '
+        '(cut across their crossing): '
+        'speed=${playerCar.speed.toStringAsFixed(0)}');
+    GameBus.instance
+        .emit(PedestrianYieldViolationEvent(speedAtLine: playerCar.speed));
+    // Ensure a logged fault always has a visible "!": on a GAP cut-off the
+    // proximity startle (TileManager) never fired (the car stayed outside
+    // kPedPersonalSpace), so add the bubble here when the ped isn't already
+    // startled.
+    final world = parent;
+    if (world != null && !cutOff.startledByPlayer) {
+      world.add(ReactionBubble(
+        target: cutOff,
+        player: playerCar,
+        reaction: DriverReaction.failedToYield,
+      ));
     }
   }
 
