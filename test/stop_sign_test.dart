@@ -111,5 +111,39 @@ void main() {
             reason: 'the lowest-ticket (list-head) car proceeds for $order');
       }
     });
+
+    // A car frozen for a pedestrian at its line steps out of the contest: it's
+    // removed from the waiters AND not counted as a blocker, so a conflicting
+    // cross car flows past instead of waiting on a car that won't move.
+    test('a pedestrian-yielding car releases the cross car it would block', () {
+      // A (earliest ticket) conflicts with B. Normally A wins and B waits.
+      bool conflicts(Object a, Object b) => {a, b}.containsAll({'A', 'B'});
+      final blocked = IntersectionTile.computeReleases(
+          ['A', 'B'], <Object>{}, conflicts);
+      expect(blocked, {'A'}, reason: 'baseline: B yields to A');
+
+      // A is ped-yielding → dropped from waiters and never a blocker. B flows.
+      final freed = IntersectionTile.computeReleases(
+          ['B'], <Object>{}, conflicts);
+      expect(freed, {'B'},
+          reason: 'A is frozen for a pedestrian (box free) — B proceeds');
+    });
+  });
+
+  // The scope decision for "stop blocking cross traffic": ONLY a car at/behind
+  // its own stop line and held by a pedestrian yields its turn. A car in the box
+  // OR one that has rolled past its line (both atOwnLine == false) keeps its turn
+  // — it occupies / is committed to the intersection — even with a ped ahead.
+  group('isPedYieldingAtEntry scope', () {
+    test('at the line + a pedestrian hold = yielding at entry', () {
+      expect(IntersectionTile.isPedYieldingAtEntry(true, 42.0), isTrue);
+    });
+    test('not at the line (in box / past line) is never flagged', () {
+      expect(IntersectionTile.isPedYieldingAtEntry(false, 42.0), isFalse);
+      expect(IntersectionTile.isPedYieldingAtEntry(false, null), isFalse);
+    });
+    test('at the line with a clear path is not yielding', () {
+      expect(IntersectionTile.isPedYieldingAtEntry(true, null), isFalse);
+    });
   });
 }

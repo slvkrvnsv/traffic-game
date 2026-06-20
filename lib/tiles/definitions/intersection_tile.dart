@@ -524,15 +524,29 @@ class IntersectionTile extends TileBase {
     // Cache for the debug zebra-box overlay (rendered separately).
     if (kDebugMode) _debugPeds = pedestrians;
 
-    // A crossing pedestrian is ahead in the player's path → a legitimate wait
-    // (and what exempts the road-block penalty). The SAME one probe the NPCs
-    // use, walked along the player's own spline, so entry and exit (turn)
-    // crossings are both covered without a separate cone.
+    // The pedestrian hold for every vehicle — the distance to the nearest
+    // crossing pedestrian ahead on its OWN movement spline, or null if clear.
+    // Computed ONCE here (the single probe) along each car's actual spline (the
+    // known-correct pair: `spline` + its own `distanceTravelled`, matching what
+    // the player wait/road-block exemption has always used), then reused for the
+    // player wait flag, the pedestrian-aware arbitration, and the per-NPC apply
+    // loop — so it's never walked twice.
     final playerSpline = playerCar.spline;
-    _pedBlockingPlayer = playerSpline != null &&
-        _pedStopOnPath(
-                playerSpline, playerCar.distanceTravelled, pedestrians) !=
-            null;
+    final playerPedStop = playerSpline != null
+        ? _pedStopOnPath(playerSpline, playerCar.distanceTravelled, pedestrians)
+        : null;
+    final pedStopById = <Object, double?>{
+      _playerId: playerPedStop,
+      for (final npc in npcs)
+        if (npc.spline != null)
+          npc: _pedStopOnPath(
+              npc.spline!, npc.distanceTravelled, pedestrians),
+    };
+
+    // A crossing pedestrian is ahead in the player's path → a legitimate wait
+    // (and what exempts the road-block penalty). Entry and exit (turn) crossings
+    // are both covered by walking the player's own spline — no separate cone.
+    _pedBlockingPlayer = playerPedStop != null;
 
     // Collect every vehicle that sits on one of *this* tile's lanes together
     // with its heading and identity, in tile-local coordinates.
@@ -560,8 +574,22 @@ class IntersectionTile extends TileBase {
             speed: npc.speed,
           ),
     ];
+    // Cars yielding to a pedestrian AT ENTRY — stopped behind the box for a
+    // crossing ahead, so they won't enter the box this turn. They step out of
+    // the right-of-way contest (see [_arbitrateAllWayStop]): the box is free for
+    // cross traffic and the player isn't faulted for going around them. Scoped
+    // to `approaching` so a car stopped INSIDE the box (for an exit crossing)
+    // still blocks — it physically occupies the intersection.
+    final pedYielding = <Object>{
+      for (final v in samples)
+        if (isPedYieldingAtEntry(
+            _zoneOf(v.heading, v.localPos) == _Zone.approaching &&
+                _gapToStopLine(v.heading, v.localPos) >= 0,
+            pedStopById[v.id]))
+          v.id,
+    };
 
-    final going = _arbitrateAllWayStop(dt, samples);
+    final going = _arbitrateAllWayStop(dt, samples, pedYielding);
     _playerReleased = going.contains(_playerId);
 
     // Apply the decision to each NPC. A car not yet released must stop at its
@@ -584,8 +612,9 @@ class IntersectionTile extends TileBase {
       // One mechanism for pedestrians: the distance to the nearest crossing
       // pedestrian ahead on this car's own path, or null if the way is clear.
       // Always evaluated — entry crossing, exit crossing, mid-turn, all the same
-      // probe — and the brain brakes to it like any other stop-target.
-      final pedStop = _pedStopAhead(npc, pedestrians);
+      // probe — and the brain brakes to it like any other stop-target. Computed
+      // once above (also feeds `pedYielding`), looked up here.
+      final pedStop = pedStopById[npc];
 
       if (z != _Zone.approaching) {
         // In the box or past the line — the all-way-stop hold is behind it; the
@@ -718,9 +747,30 @@ class IntersectionTile extends TileBase {
   /// uniform, but it carries at most one car.
   final List<NpcCar> _playerWaiters = [];
 
+  /// True when a vehicle is yielding to a pedestrian at its entry: it is
+  /// [atOwnLine] (approaching AND still at/behind its own stop line) and has a
+  /// non-null pedestrian hold [pedStop] on its path. For such a car the nearest
+  /// crossing the probe can return is its entry crossing, so it will not enter
+  /// the box this turn — it is yielding, not taking its turn. Two exclusions
+  /// matter: a car already IN the box keeps blocking (it occupies the
+  /// intersection), and a car that has rolled PAST its line is committed — it
+  /// keeps its turn and merely brakes for the pedestrian, rather than handing the
+  /// box to cross traffic from the intersection mouth. Both are [atOwnLine] ==
+  /// false. Pure, for unit-testing the scope.
+  @visibleForTesting
+  static bool isPedYieldingAtEntry(bool atOwnLine, double? pedStop) =>
+      atOwnLine && pedStop != null;
+
   /// Run one frame of all-way-stop arbitration over [samples]; returns the ids
   /// committed to proceed (blocking the box, or released this frame).
-  Set<Object> _arbitrateAllWayStop(double dt, List<_VehicleSample> samples) {
+  ///
+  /// [pedYielding] are vehicles stopped at their line for a pedestrian (see
+  /// [isPedYieldingAtEntry]); they step out of the right-of-way contest while
+  /// held — they don't block conflicting cross traffic, aren't released
+  /// themselves, and don't outrank the player — but keep their arrival ticket,
+  /// so each reclaims its turn once the pedestrian clears.
+  Set<Object> _arbitrateAllWayStop(
+      double dt, List<_VehicleSample> samples, Set<Object> pedYielding) {
     final present = {for (final v in samples) v.id};
     _ticket.removeWhere((id, _) => !present.contains(id));
     _granted.removeWhere((id) => !present.contains(id));
@@ -768,6 +818,14 @@ class IntersectionTile extends TileBase {
       }
     }
 
+    // A car now yielding to a pedestrian at its line forfeits any release it
+    // held — but KEEPS its ticket. This is what makes the hand-off race-free:
+    // instead of resuming the instant the pedestrian clears (and driving into a
+    // car that has since been released into the box), it re-enters as a normal
+    // waiter and is blocked by whatever is now crossing, then released once that
+    // clears. Its retained ticket keeps its place in line.
+    _granted.removeWhere(pedYielding.contains);
+
     // Ticketing: a car claims its turn (arrival order) once it is at rest *and*
     // frontmost on its own approach — no other car ahead of it that is still
     // approaching the box. This is the all-way-stop "one car at a time" rule: a
@@ -811,8 +869,11 @@ class IntersectionTile extends TileBase {
     final blockers = <Object>{
       for (final v in samples)
         // A player that has hesitated past the go threshold is demoted: it no
-        // longer blocks, so the cars waiting on it take their turn.
+        // longer blocks, so the cars waiting on it take their turn. A car
+        // yielding to a pedestrian at its line (approaching) doesn't block
+        // either — the box is free behind it, so cross traffic flows.
         if (!(v.id == _playerId && demotePlayer) &&
+            !pedYielding.contains(v.id) &&
             ((zone[v.id] == _Zone.approaching && _granted.contains(v.id)) ||
                 (zone[v.id] == _Zone.inBox &&
                     !_isClearing(v.heading, v.localPos, v.path))))
@@ -827,6 +888,10 @@ class IntersectionTile extends TileBase {
             zone[id] == _Zone.approaching &&
             _ticket.containsKey(id) &&
             !blockers.contains(id) &&
+            // A car yielding to a pedestrian at its line isn't released — it's
+            // holding for the crossing, not taking its turn (it keeps its ticket
+            // and reclaims its turn once the pedestrian clears).
+            !pedYielding.contains(id) &&
             // A demoted (hesitating) player forfeits its turn — it must not
             // re-win the release with its early ticket and re-block the NPCs.
             !(id == _playerId && demotePlayer))
@@ -870,6 +935,8 @@ class IntersectionTile extends TileBase {
         if (v.id is! NpcCar) continue;
         if ((_npcWaitTime[v.id] ?? 0.0) < _npcFlashAfterStopSeconds) continue;
         if (zone[v.id] != _Zone.approaching || released.contains(v.id)) continue;
+        // A car frozen for a pedestrian won't move, so it can't wave anyone on.
+        if (pedYielding.contains(v.id)) continue;
         if (!_movementsConflict(p.heading, p.path, v.heading, v.path)) continue;
         final t = _ticket[v.id] ?? (1 << 30);
         if (t < nextTicket) {
@@ -892,6 +959,11 @@ class IntersectionTile extends TileBase {
       if (!_movementsConflict(player.heading, player.path, o.heading, o.path)) {
         continue;
       }
+      // A car stopped at its line for a pedestrian isn't exercising priority
+      // over the player — it's yielding to the crossing. Going around it is not
+      // a fail-to-yield-to-car (the player can still earn the separate
+      // pedestrian give-way fault if it cuts off the ped).
+      if (pedYielding.contains(o.id)) continue;
       // A left-turning player may pull into the box and yield to oncoming
       // traffic (the opposite approach, Heading.south) from within — entering
       // isn't a fault. So oncoming cars (whether going straight or turning
@@ -1056,13 +1128,6 @@ class IntersectionTile extends TileBase {
       }
     }
     return null;
-  }
-
-  /// [_pedStopOnPath] for an NPC, along its current movement spline.
-  double? _pedStopAhead(NpcCar npc, List<Pedestrian> pedestrians) {
-    final sp = npc.spline;
-    if (sp == null) return null;
-    return _pedStopOnPath(sp, npc.distanceTravelled, pedestrians);
   }
 
   /// The nearer of two optional stop-target distances (smaller wins; null = no
