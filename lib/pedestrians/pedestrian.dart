@@ -49,10 +49,12 @@ class Pedestrian extends PositionComponent with SplineFollower {
   // face-to-face or ghosts through. Kept apart from the car flags so the give-way
   // fault (which keys off [blockedByPlayer]) is never confused by a ped lean.
   //
-  // [_avoidSign] is the COMMITTED lean direction (+1 right / −1 left) for the
-  // current encounter: chosen once when a threat first appears and held until the
-  // walkers have passed AND the lean has eased back, so the figure drifts apart
-  // smoothly instead of bouncing as the instantaneous geometry flips mid-pass.
+  // [_avoidStep] is the COMMITTED side-step value (world units, signed) for the
+  // current encounter: captured once when a threat first appears and held until
+  // the walkers have passed AND the lean has eased back, so the figure drifts
+  // apart smoothly instead of bouncing as the instantaneous geometry flips
+  // mid-pass. (Committing the VALUE, not just a side, keeps a wide overtake swing
+  // from collapsing into a small crossing-step as the prediction shifts.)
   // [_avoidSuggested] is the raw per-frame suggestion from TileManager (a signed
   // step when a converging walker is predicted within [kPedAvoidMiss], else 0).
   // [_avoidLinger] holds the lean out for a moment after the suggestion clears,
@@ -60,7 +62,7 @@ class Pedestrian extends PositionComponent with SplineFollower {
   // yet passed — without it the lean would collapse mid-pass and clip the other.
   // [_threatened] (derived each frame in [update]) is what actually drives the
   // lean out, and its release the lean back.
-  double _avoidSign = 0.0;
+  double _avoidStep = 0.0;
   double _avoidSuggested = 0.0;
   double _avoidLinger = 0.0;
   bool _threatened = false;
@@ -116,20 +118,19 @@ class Pedestrian extends PositionComponent with SplineFollower {
     if (_avoidSuggested != 0.0) {
       _threatened = true;
       _avoidLinger = kPedAvoidLinger;
-      if (_avoidSign == 0.0) _avoidSign = _avoidSuggested > 0.0 ? 1.0 : -1.0;
+      if (_avoidStep == 0.0) _avoidStep = _avoidSuggested;
     } else if (_avoidLinger > 0.0) {
       _avoidLinger -= dt;
       _threatened = true;
     } else {
       _threatened = false;
-      if ((lateralOffset - kPedLaneOffset).abs() < 0.5) _avoidSign = 0.0;
+      if ((lateralOffset - kPedLaneOffset).abs() < 0.5) _avoidStep = 0.0;
     }
     // Ease the lateral offset toward the keep-right baseline, plus the committed
     // side-step while threatened, capped so the lean tracks at a calm drift
     // (never a sideways snap). Runs even while held for a car, so a stopped ped
     // can still lean clear of a passing walker.
-    final target =
-        kPedLaneOffset + (_threatened ? _avoidSign * kPedSideStep : 0.0);
+    final target = kPedLaneOffset + (_threatened ? _avoidStep : 0.0);
     final maxLean = kPedSideStepRate * dt;
     lateralOffset += (target - lateralOffset).clamp(-maxLean, maxLean);
     if (!hold) advanceByDistance(walkSpeed * dt);

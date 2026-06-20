@@ -159,35 +159,34 @@ const double kPedMinSpawnDist = 240.0;
 const double kPedStepProbe = 10.0;
 /// Keep-right lateral offset (world units) every pedestrian rides off its
 /// route's centreline. Two pedestrians meeting head-on on a shared centreline
-/// each keep to their own right, so they slide to OPPOSITE sides (2× this apart)
-/// and pass cleanly without overlapping. Sized so that 2× exceeds the ~16u
-/// figure width (a visible gap on a head-on pass) yet base + [kPedSideStep]
-/// stays inside the 20u pavement half-width AND the ±26u zebra detection band
-/// (so a crossing pedestrian still reads as on its zebra for the rules).
-const double kPedLaneOffset = 10.0;
-/// Avoidance side-step (world units, signed). A walker that anticipates a near
-/// pass with another (closer than [kPedAvoidMiss] within [kPedAvoidHorizon])
-/// leans this far off the keep-right baseline — toward the side that OPENS the
-/// gap — and keeps walking, easing back once clear. This is how walkers slip past
-/// each other instead of freezing face-to-face or ghosting through. Base + this
-/// = 18 < pavement half (20) and
-/// < zebra band (26), so the lean never leaves the pavement or the rule band.
+/// each keep to their own right, so they slide to OPPOSITE sides (2× this = 24
+/// apart) and pass with a clear gap — comfortably more than the ~16u figure
+/// width, so shoulders don't visibly clip. Two of these lanes plus the figure
+/// just fill the 40u pavement (a ped centred here spans to the curb edge), and
+/// it sits well inside the ±26u zebra detection band (a crossing ped still reads
+/// as on its zebra for the rules).
+const double kPedLaneOffset = 12.0;
+/// Avoidance side-step (world units) a walker leans to clear a CROSSING or
+/// near-oncoming walker (a converging corner). A same-direction OVERTAKE doesn't
+/// use this — the faster walker swaps to the open opposite lane (2×[kPedLaneOffset])
+/// to pass, the way people actually overtake, then drifts back. Anticipatory:
+/// triggered when a near pass is predicted within [kPedAvoidMiss]/[kPedAvoidHorizon].
 const double kPedSideStep = 8.0;
 /// Predicted closest-approach distance (world units) below which a pedestrian
-/// treats another as a collision to avoid. Kept UNDER 2×[kPedLaneOffset] (=20)
-/// so two walkers that will pass on their own keep-right lanes (already 20 apart)
-/// are recognised as a clean pass and DON'T swerve — only a genuine near-miss
-/// (a same-lane catch-up or a converging corner) trips it. Predicting the MISS,
-/// not mere proximity, is what stops the nervous bouncing on ordinary passes.
+/// treats another as a collision to avoid. Kept UNDER 2×[kPedLaneOffset] (=24)
+/// so two walkers that will pass on their own keep-right lanes are recognised as
+/// a clean pass and DON'T swerve — only a genuine near-miss (a same-lane catch-up
+/// or a converging corner) trips it. Predicting the MISS, not mere proximity, is
+/// what stops the nervous bouncing on ordinary passes.
 const double kPedAvoidMiss = 16.0;
 /// How far AHEAD IN TIME (seconds) a pedestrian looks for a converging walker.
 /// Anticipation window: prediction uses both walkers' velocities so they begin
 /// easing apart early and calmly, well before they would actually meet.
 const double kPedAvoidHorizon = 1.6;
-/// How fast (world units/sec) the side-step eases in and out. Gentle (under the
-/// walk speed) so the lean reads as a calm drift apart, not a sharp bounce — the
-/// anticipation window leaves ample time to complete it before the pass.
-const double kPedSideStepRate = 18.0;
+/// How fast (world units/sec) the side-step eases in and out. Calm (around the
+/// walk speed) so the lean reads as a smooth drift, not a sharp bounce, while
+/// still completing the wider overtake swing within the anticipation window.
+const double kPedSideStepRate = 22.0;
 /// How long (seconds) a pedestrian holds its committed lean after the predicted
 /// threat clears. Bridges the brief instant when the other walker is alongside —
 /// neither ahead (so no new suggestion) nor yet passed — so the lean doesn't

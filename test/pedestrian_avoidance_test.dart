@@ -101,26 +101,34 @@ void main() {
     });
 
     test('a clean keep-right pass (will miss by 2×offset) does NOT swerve', () {
-      // Head-on, offset by the full lane separation → predicted miss = 20 > the
+      // Head-on, offset by the full lane separation → predicted miss = 24 > the
       // threshold, so it is recognised as a normal pass and ignored.
       expect(
           step([Vector2(40, 2 * kPedLaneOffset)], [Vector2(-20, 0)]), 0.0);
     });
 
-    test('a dead-on head-on collision → step right (+)', () {
+    test('catching up a same-direction walker → overtake in the opposite lane',
+        () {
+      // Other ahead, moving my way but slower → swap to the open opposite lane.
+      expect(step([Vector2(16, 0)], [Vector2(8, 0)]), -2 * kPedLaneOffset);
+    });
+
+    test('a dead-on near-oncoming collision → step right (+)', () {
       expect(step([Vector2(40, 0)], [Vector2(-20, 0)]), kPedSideStep);
     });
 
-    test('a near-miss passing on my right → step left (−)', () {
-      expect(step([Vector2(40, 10)], [Vector2(-20, 0)]), -kPedSideStep);
+    test('a crosser whose closest approach is on my right → step left (−)', () {
+      // Approaches from below-right but crosses upward, so it passes on my
+      // right (+y) at closest approach → step left, away from it.
+      expect(step([Vector2(20, -12)], [Vector2(0, 20)]), -kPedSideStep);
     });
 
-    test('a near-miss passing on my left → step right (+)', () {
-      expect(step([Vector2(40, -10)], [Vector2(-20, 0)]), kPedSideStep);
+    test('a crosser whose closest approach is on my left → step right (+)', () {
+      expect(step([Vector2(20, 12)], [Vector2(0, -20)]), kPedSideStep);
     });
 
     test('reacts to the SOONEST converging ped', () {
-      // Two head-on threats; the nearer (sooner) one is on my left → step right.
+      // Two near-oncoming threats; the nearer (sooner) one is on my left → right.
       final r = step(
         [Vector2(80, 6), Vector2(30, -6)],
         [Vector2(-20, 0), Vector2(-20, 0)],
@@ -148,7 +156,8 @@ void main() {
       // Keep-right alone holds them 2×offset apart, a clean pass — so they do
       // NOT swerve at all (no nervous bouncing).
       expect(r.maxLean, lessThan(0.5), reason: 'no needless side-step');
-      expect(r.minDist, greaterThan(16.0));
+      expect(r.minDist, greaterThan(2 * kPedLaneOffset - 2),
+          reason: 'a clear gap (~2×offset), shoulders do not clip');
     });
 
     test('a fast walker overtakes a slow one without stopping or overlapping',
@@ -167,7 +176,10 @@ void main() {
       final r = simulate([leader, follower], 360);
       expect(r.allAdvanced, isTrue, reason: 'the follower never halts');
       expect(r.maxLean, greaterThan(0.0), reason: 'a side-step actually fired');
-      expect(r.minDist, greaterThan(6.0), reason: 'no full overlap (no ghost)');
+      // Overtaking in the opposite lane → a real gap as they pass, not the old
+      // half-body overlap.
+      expect(r.minDist, greaterThan(14.0),
+          reason: 'clears properly, no shoulder overlap');
     });
 
     test('perpendicular corner: both keep moving and steer clear', () {

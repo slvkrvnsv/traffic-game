@@ -283,12 +283,17 @@ class TileManager extends Component {
     }
   }
 
-  /// The signed side-step (world units, +right of travel) a pedestrian at [pos]
-  /// moving at [vel] should lean to clear the MOST IMMINENT other walker it is
-  /// predicted to pass too close to — toward the side that opens the gap (or, for
-  /// a dead-on meeting, to the right). Returns 0 when every pass is already
-  /// clear. Anticipatory: for each other walker it computes the time of closest
-  /// approach from the relative velocity and only reacts if that approach is soon
+  /// The signed lateral step (world units, +right of travel) a pedestrian at
+  /// [pos] moving at [vel] should add to its keep-right offset to clear the MOST
+  /// IMMINENT other walker it is predicted to pass too close to. Returns 0 when
+  /// every pass is already clear. Two flavours, by how the other is moving:
+  ///   * SAME direction (catching it up) → −2×[kPedLaneOffset]: swap to the open
+  ///     opposite lane and overtake there, the way people actually pass;
+  ///   * crossing / near-oncoming → ±[kPedSideStep] toward the side that opens
+  ///     the gap (a dead-on meeting breaks to the right, which desyncs a
+  ///     symmetric corner crossing so both clear).
+  /// Anticipatory: for each other walker it computes the time of closest approach
+  /// from the relative velocity and only reacts if that approach is soon
   /// ([kPedAvoidHorizon]), still ahead, and tighter than [kPedAvoidMiss]. Pure
   /// geometry (no component state) so it is unit-testable; [positions]/
   /// [velocities] are parallel and may include [pos] itself, skipped by identity.
@@ -299,13 +304,14 @@ class TileManager extends Component {
     final fwd = vel / speed;
     final right = Vector2(-fwd.y, fwd.x); // +lateralOffset direction
     double? bestTca;
-    double sign = 1.0;
+    double suggested = 0.0;
     for (var i = 0; i < positions.length; i++) {
       final op = positions[i];
       if (identical(op, pos)) continue;
       final rp = op - pos;
       if (rp.dot(fwd) <= 0) continue; // only give way to someone ahead
-      final rv = velocities[i] - vel;
+      final ov = velocities[i];
+      final rv = ov - vel;
       final vv = rv.dot(rv);
       final tca = vv < 1e-6 ? 0.0 : -rp.dot(rv) / vv; // time of closest approach
       if (tca < 0 || tca > kPedAvoidHorizon) continue; // past, or too far off
@@ -313,11 +319,16 @@ class TileManager extends Component {
       if (ca.length > kPedAvoidMiss) continue; // will pass with room → ignore
       if (bestTca == null || tca < bestTca) {
         bestTca = tca;
-        final lat = ca.dot(right);
-        sign = lat > 0.5 ? -1.0 : 1.0; // step away from their side; dead-on → right
+        final os = ov.length;
+        if (os > 1e-6 && fwd.dot(ov / os) > 0.5) {
+          suggested = -2 * kPedLaneOffset; // overtake in the opposite lane
+        } else {
+          final lat = ca.dot(right);
+          suggested = (lat > 0.5 ? -1.0 : 1.0) * kPedSideStep; // away from them
+        }
       }
     }
-    return bestTca == null ? 0.0 : sign * kPedSideStep;
+    return bestTca == null ? 0.0 : suggested;
   }
 
   /// A road-crossing pedestrian respects a car's bounding box: it holds at the
