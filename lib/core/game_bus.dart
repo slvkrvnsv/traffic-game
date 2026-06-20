@@ -21,6 +21,14 @@ class YieldViolationEvent extends GameEvent {
   final double speedAtLine;
 }
 
+/// Player forced a pedestrian crossing — drove through while someone was on the
+/// zebra without yielding. Non-fatal (logged exam fault); actually hitting them
+/// is a separate [CollisionEvent] that ends the run.
+class PedestrianYieldViolationEvent extends GameEvent {
+  PedestrianYieldViolationEvent({required this.speedAtLine});
+  final double speedAtLine;
+}
+
 /// Player did not stop fully at a stop-sign line.
 class StopSignViolationEvent extends GameEvent {
   StopSignViolationEvent({required this.minSpeedObserved});

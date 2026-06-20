@@ -1,11 +1,11 @@
 import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flame/components.dart';
-import '../cars/npc_car.dart';
 import '../cars/player_car.dart';
 import 'driver_reaction.dart';
 
-/// A short-lived speech bubble drawn above an NPC that reacted to the player.
+/// A short-lived speech bubble drawn above whoever reacted to the player — an
+/// NPC car, or a pedestrian the player forced.
 ///
 /// Lives in world space as a child of the world (NOT of the NPC): the camera
 /// rotates to keep the player pointing up, so a child-of-NPC bubble would flip
@@ -30,7 +30,9 @@ class ReactionBubble extends PositionComponent {
           priority: 100, // above cars (5/10)
         );
 
-  final NpcCar target;
+  /// Whoever the bubble follows (an NPC car or a pedestrian). Only the
+  /// [PositionComponent] surface — position, removal, parent — is used.
+  final PositionComponent target;
   final PlayerCar player;
   final DriverReaction reaction;
 

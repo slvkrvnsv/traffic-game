@@ -16,7 +16,12 @@ void main() {
   // cancelled at the end of the test instead of leaking onto the singleton bus.
   ExamErrorRecorder mountRecorder() {
     final r = ExamErrorRecorder(
-      tileManager: TileManager(playerCar: PlayerCar(), world: World()),
+      tileManager: TileManager(
+        playerCar: PlayerCar(),
+        world: World(),
+        pedestrians: const [],
+        ambientPedestrians: const [],
+      ),
       log: ExamErrorLog.instance,
     )..onMount();
     addTearDown(r.onRemove);

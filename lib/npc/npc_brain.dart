@@ -9,7 +9,6 @@ import 'npc_states/state_following.dart';
 import 'npc_states/state_yielding.dart';
 import 'npc_states/state_waiting_light.dart';
 import 'npc_states/state_signaling.dart';
-import 'npc_states/state_pedestrian_yield.dart';
 
 /// Simple state-machine AI for NPC cars.
 ///
@@ -22,7 +21,6 @@ class NpcBrain {
 
   // External sensor inputs — set by NpcSpawner / TileBase each frame.
   double? leadCarDistance;
-  bool pedestrianInPath = false;
   bool intersectionRuleActive = false;
   bool hasRightOfWay = true;
   bool isRedLight = false;
@@ -57,7 +55,6 @@ class NpcBrain {
       currentSpeed: car.speed,
       currentT: car.currentT,
       leadCarDistance: leadCarDistance,
-      pedestrianInPath: pedestrianInPath,
       intersectionRuleActive: intersectionRuleActive,
       hasRightOfWay: hasRightOfWay,
       isRedLight: isRedLight,
@@ -114,7 +111,10 @@ class NpcBrain {
   }
 
   /// Caps speed so the NPC's nose comes to rest at [stopTargetDistance] (a stop
-  /// line), following the kinematic stopping curve `v = sqrt(2·a·d)`.
+  /// line), following the kinematic stopping curve `v = sqrt(2·a·d)`. Pedestrian
+  /// yielding is done by the intersection HOLDING the car at its line (it sets
+  /// stopTargetDistance) while a pedestrian is on the zebra — a car that has
+  /// already left the line commits and clears, so there's no stop on the zebra.
   double _applyStopTarget(double speed) {
     final d = stopTargetDistance;
     if (d == null) return speed;
@@ -147,9 +147,13 @@ class NpcBrain {
   void _transition(NpcCar car, NpcSensors s) {
     final type = _state.runtimeType;
 
+    // Pedestrian yielding is handled by the intersection holding the car at its
+    // stop line (it sets stopTargetDistance) while a pedestrian is on the zebra
+    // — the car keeps its current state, so there's no dedicated pedestrian
+    // state to enter/leave and no risk of a car getting wedged in a yield state.
+
     // ---- From Cruising ----
     if (type == StateCruising) {
-      if (s.pedestrianInPath) return _go(StatePedestrianYield(), car);
       if (s.isRedLight) return _go(StateWaitingLight(), car);
       if (s.intersectionRuleActive && !s.hasRightOfWay) return _go(StateYielding(), car);
       if (s.isTurning && s.distanceToTurnSignal <= kIndicatorSignalDistance) return _go(StateSignaling(), car);
@@ -158,7 +162,6 @@ class NpcBrain {
 
     // ---- From Following ----
     else if (type == StateFollowing) {
-      if (s.pedestrianInPath) return _go(StatePedestrianYield(), car);
       if (s.isRedLight) return _go(StateWaitingLight(), car);
       if (s.intersectionRuleActive && !s.hasRightOfWay) return _go(StateYielding(), car);
       if (s.leadCarDistance == null || s.leadCarDistance! >= kNpcSafeGapDistance * 4.0) return _go(StateCruising(), car);
@@ -166,7 +169,6 @@ class NpcBrain {
 
     // ---- From Yielding ----
     else if (type == StateYielding) {
-      if (s.pedestrianInPath) return _go(StatePedestrianYield(), car);
       if (s.hasRightOfWay) return _go(StateCruising(), car);
     }
 
@@ -177,15 +179,9 @@ class NpcBrain {
 
     // ---- From Signaling ----
     else if (type == StateSignaling) {
-      if (s.pedestrianInPath) return _go(StatePedestrianYield(), car);
       if (s.isRedLight) return _go(StateWaitingLight(), car);
       if (s.intersectionRuleActive && !s.hasRightOfWay) return _go(StateYielding(), car);
       if (s.distanceToTurnSignal > kIndicatorSignalDistance) return _go(StateCruising(), car);
-    }
-
-    // ---- From PedestrianYield ----
-    else if (type == StatePedestrianYield) {
-      if (!s.pedestrianInPath) return _go(StateCruising(), car);
     }
   }
 

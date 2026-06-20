@@ -87,7 +87,7 @@ void main() {
       final through = npcAt(throughLane, 1, 600, speed: kmhToUnits(40));
       tile.npcs.addAll([merge, through]);
 
-      tile.updateNpcSensors(1 / 60, player, tile.npcs);
+      tile.updateNpcSensors(1 / 60, player, tile.npcs, const []);
       expect(merge.brain.signalLeftForMerge, isTrue,
           reason: 'merging car signals left across the move');
 
@@ -105,7 +105,7 @@ void main() {
       final through = npcAt(throughLane, 1, 1120, speed: kmhToUnits(40));
       tile.npcs.addAll([merge, through]);
 
-      tile.updateNpcSensors(1 / 60, player, tile.npcs);
+      tile.updateNpcSensors(1 / 60, player, tile.npcs, const []);
       expect(merge.brain.signalLeftForMerge, isFalse);
 
       merge.brain.update(1 / 60, merge);
@@ -116,7 +116,7 @@ void main() {
     test('a merged NPC (past the pinch) drops the left signal', () {
       final merge = npcAt(mergeLane, 2, 150); // below _taperEndY (250) → merged
       tile.npcs.add(merge);
-      tile.updateNpcSensors(1 / 60, player, tile.npcs);
+      tile.updateNpcSensors(1 / 60, player, tile.npcs, const []);
       expect(merge.brain.signalLeftForMerge, isFalse,
           reason: 'indicator turns off once merged');
     });
@@ -129,7 +129,7 @@ void main() {
 
       const dt = 1 / 60;
       for (int i = 0; i < 180; i++) {
-        tile.updateNpcSensors(dt, player, tile.npcs);
+        tile.updateNpcSensors(dt, player, tile.npcs, const []);
         merge.update(dt);
         through.update(dt);
         final overlap = obbOverlap(
@@ -172,7 +172,7 @@ void main() {
 
       const dt = 1 / 60;
       for (int i = 0; i < 180; i++) {
-        widen.updateNpcSensors(dt, player, widen.npcs);
+        widen.updateNpcSensors(dt, player, widen.npcs, const []);
         inner.update(dt);
         outer.update(dt);
         final overlap = obbOverlap(
@@ -204,13 +204,13 @@ void main() {
 
     test('in the ending lane the left indicator is forced on', () {
       final p = playerOn(tile.playerPaths[1], 600); // merge (ending) lane
-      tile.updateNpcSensors(1 / 60, p, tile.npcs);
+      tile.updateNpcSensors(1 / 60, p, tile.npcs, const []);
       expect(p.forceLeftIndicator, isTrue);
     });
 
     test('in the through lane there is no forced signal ("just go")', () {
       final p = playerOn(tile.playerPaths[0], 600); // through lane
-      tile.updateNpcSensors(1 / 60, p, tile.npcs);
+      tile.updateNpcSensors(1 / 60, p, tile.npcs, const []);
       expect(p.forceLeftIndicator, isFalse);
     });
 
@@ -223,13 +223,13 @@ void main() {
 
       // Mid-merge (in the ending lane, before the pinch): armed.
       final merging = playerOn(graded.playerPaths[1], 600);
-      graded.updateNpcSensors(1 / 60, merging, graded.npcs);
+      graded.updateNpcSensors(1 / 60, merging, graded.npcs, const []);
       expect(sc.playerIsMerging, isTrue);
 
       // Past the pinch (still on the merge spline, but merged in): disarmed —
       // a cut-off here must NOT fail the merge.
       final merged = playerOn(graded.playerPaths[1], 150); // below _taperEndY
-      graded.updateNpcSensors(1 / 60, merged, graded.npcs);
+      graded.updateNpcSensors(1 / 60, merged, graded.npcs, const []);
       expect(sc.playerIsMerging, isFalse);
       sc.onDriverReaction();
       expect(sc.result.status, isNot(ScenarioStatus.failed),

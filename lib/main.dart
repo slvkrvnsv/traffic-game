@@ -62,11 +62,13 @@ class TrafficApp extends StatelessWidget {
             final testMode = args?['testMode'] as TileType?;
             final testManeuver = args?['testManeuver'] as Maneuver?;
             final testSequence = args?['testSequence'] as List<TileType>?;
+            final testLocale = args?['testLocale'] as LocaleType?;
             return MaterialPageRoute(
               builder: (_) => GameScreen(
                 testMode: testMode,
                 testManeuver: testManeuver,
                 testSequence: testSequence,
+                testLocale: testLocale,
               ),
             );
           default:
@@ -82,11 +84,16 @@ class TrafficApp extends StatelessWidget {
 /// The game screen: Flame GameWidget + Flutter HUD overlay.
 class GameScreen extends StatefulWidget {
   const GameScreen(
-      {super.key, this.testMode, this.testManeuver, this.testSequence});
+      {super.key,
+      this.testMode,
+      this.testManeuver,
+      this.testSequence,
+      this.testLocale});
 
   final TileType? testMode;
   final Maneuver? testManeuver;
   final List<TileType>? testSequence;
+  final LocaleType? testLocale;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -99,6 +106,7 @@ class _GameScreenState extends State<GameScreen> {
         testMode: widget.testMode,
         testManeuver: widget.testManeuver,
         testSequence: widget.testSequence,
+        testLocale: widget.testLocale,
       );
 
   @override

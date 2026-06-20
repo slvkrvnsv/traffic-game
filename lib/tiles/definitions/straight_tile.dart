@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flame/components.dart';
 import '../../core/constants.dart';
 import '../../core/spline.dart';
+import '../environment.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
 import '../scenarios/scenario_base.dart';
@@ -21,7 +22,7 @@ import '../scenarios/free_drive_scenario.dart';
 ///   X → right
 ///   Y → up (forward direction of travel)
 class StraightTile extends TileBase {
-  StraightTile({ScenarioBase? scenario})
+  StraightTile({ScenarioBase? scenario, super.locale})
       : super(
           tileType: TileType.straight,
           scenario: scenario ?? FreeDriveScenario(),
@@ -35,6 +36,7 @@ class StraightTile extends TileBase {
       TileType.straight,
       (ctx) => StraightTile(
         scenario: ScenarioRegistry.forTile(TileType.straight, rng: ctx.rng),
+        locale: ctx.locale,
       ),
       entryLanes: 2,
       exitLanes: 2,
@@ -111,6 +113,40 @@ class StraightTile extends TileBase {
   @override
   Vector2 get exitAnchor => Vector2(_playerInnerX, 0);
 
+  // Off-road grass strips outside each pavement — dressed with locale scenery.
+  static const double _roadOuterLeft = _cx - _roadHalfWidth - kPavementWidth; // 400
+  static const double _roadOuterRight = _cx + _roadHalfWidth + kPavementWidth; // 800
+  // Sidewalk centrelines (ambient walkers stroll these, never the road).
+  static const double _walkLeftX = _cx - _roadHalfWidth - kPavementWidth * 0.5; // 420
+  static const double _walkRightX = _cx + _roadHalfWidth + kPavementWidth * 0.5; // 780
+
+  @override
+  List<Rect> get decorationZones => const [
+        Rect.fromLTWH(0, 0, _roadOuterLeft, kTileSize),
+        Rect.fromLTWH(_roadOuterRight, 0, kTileSize - _roadOuterRight, kTileSize),
+      ];
+
+  // Urban building blocks line each sidewalk, facing the road.
+  @override
+  List<Frontage> get buildingFrontages => const [
+        Frontage(
+            a: Offset(_walkLeftX, 0),
+            b: Offset(_walkLeftX, kTileSize),
+            outward: Offset(-1, 0)),
+        Frontage(
+            a: Offset(_walkRightX, 0),
+            b: Offset(_walkRightX, kTileSize),
+            outward: Offset(1, 0)),
+      ];
+
+  @override
+  List<Spline> get sidewalkPaths => [
+        _northbound(_walkLeftX),
+        _southbound(_walkLeftX),
+        _northbound(_walkRightX),
+        _southbound(_walkRightX),
+      ];
+
   // ---------------------------------------------------------------------------
   // Rendering
   // ---------------------------------------------------------------------------
@@ -121,13 +157,14 @@ class StraightTile extends TileBase {
     _drawPavement(canvas);
     _drawRoad(canvas);
     _drawMarkings(canvas);
+    drawDecorations(canvas); // locale scenery in the grass margins
     debugRenderSplines(canvas); // no-op in release
   }
 
   void _drawGround(Canvas canvas) {
     canvas.drawRect(
       Rect.fromLTWH(0, 0, kTileSize, kTileSize),
-      Paint()..color = const Color(0xFF4CAF50), // grass green
+      Paint()..color = groundColor,
     );
   }
 

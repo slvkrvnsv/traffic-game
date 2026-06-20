@@ -92,9 +92,11 @@ class ViolationDetector extends Component {
   }
 
   bool _playerHitsPedestrian(PlayerCar a, Pedestrian ped) {
+    // Compact, roughly square footprint for a top-down figure (orientation
+    // barely matters for a person-sized box).
     return obbOverlap(
       a.position, kCarWidth, kCarLength, a.angle,
-      ped.position, 10, 14, ped.angle,
+      ped.position, 12, 12, ped.angle,
     );
   }
 

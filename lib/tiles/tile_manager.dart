@@ -5,9 +5,14 @@ import '../core/constants.dart';
 import '../core/game_bus.dart';
 import '../core/maneuver.dart';
 import '../core/spline.dart';
+import '../core/utils.dart' show obbOverlap, pointToObbDistance;
 import '../cars/player_car.dart';
 import '../cars/npc_car.dart';
+import '../feedback/driver_reaction.dart';
+import '../feedback/reaction_bubble.dart';
 import '../npc/npc_spawner.dart';
+import '../pedestrians/pedestrian.dart';
+import '../pedestrians/pedestrian_spawner.dart';
 import '../debug/debug_state.dart';
 import 'tile_base.dart';
 import 'tile_connector.dart';
@@ -23,14 +28,22 @@ class TileManager extends Component {
   TileManager({
     required this.playerCar,
     required this.world,
+    required this.pedestrians,
+    required this.ambientPedestrians,
     this.testMode,
     this.testManeuver,
     this.testSequence,
+    this.testLocale,
     Random? rng,
   }) : _rng = rng ?? Random();
 
   final PlayerCar playerCar;
   final World world;
+
+  /// World-owned pedestrian registries (see GameWorld). Crossing pedestrians go
+  /// in [pedestrians] (rules-relevant); ambient walkers in [ambientPedestrians].
+  final List<Pedestrian> pedestrians;
+  final List<Pedestrian> ambientPedestrians;
 
   /// If set, always generate this tile type (test mode).
   final TileType? testMode;
@@ -41,6 +54,10 @@ class TileManager extends Component {
   /// If set, cycle this ordered list of tile types (test-mode course), starting
   /// with the first as the opening tile. Takes precedence over [testMode].
   final List<TileType>? testSequence;
+
+  /// If set, pin every tile to this locale (test mode). Null → free-drive rolls
+  /// the locale in stretches (see [_nextLocale]).
+  final LocaleType? testLocale;
 
   /// Next index into [testSequence]; advanced once per spawned tile.
   int _seqIndex = 0;
@@ -53,6 +70,42 @@ class TileManager extends Component {
 
   final Random _rng;
   final NpcSpawner _spawner = NpcSpawner();
+
+  /// Pedestrian spawners keyed by the tile that owns them. Created when a tile
+  /// is added, ticked each frame while it's alive, disposed when it's culled.
+  final Map<TileBase, List<PedestrianSpawner>> _pedSpawners = {};
+
+  // --- Locale (urban/interurban) rolling, free-drive only -------------------
+  // The locale runs in stretches of [kLocaleRunLength] tiles so the world keeps
+  // a coherent setting for a while, then re-rolls (phase 5). Test mode pins it.
+  LocaleType _currentLocale = LocaleType.interurban;
+  int _localeRunRemaining = 0;
+
+  /// The locale for the next tile slot. Consumes one slot of the current run;
+  /// when a run is exhausted a fresh locale is rolled (it may repeat or flip).
+  /// Called exactly once per spawned tile (NOT per placement retry, so a re-roll
+  /// to dodge an overlap keeps the slot's locale).
+  LocaleType _nextLocale() {
+    if (testLocale != null) return testLocale!;
+    final r = rollLocale(_currentLocale, _localeRunRemaining, _rng);
+    _currentLocale = r.locale;
+    _localeRunRemaining = r.remaining;
+    return r.locale;
+  }
+
+  /// Pure roll for the next slot's locale (the source of truth the locale test
+  /// drives). Holds [current] for the rest of the run; when [remaining] hits 0 a
+  /// fresh locale is rolled and a new [kLocaleRunLength] run begins. Returns the
+  /// locale for this slot and the remaining count to thread into the next call.
+  @visibleForTesting
+  static ({LocaleType locale, int remaining}) rollLocale(
+      LocaleType current, int remaining, Random rng) {
+    if (remaining <= 0) {
+      current = LocaleType.values[rng.nextInt(LocaleType.values.length)];
+      remaining = kLocaleRunLength;
+    }
+    return (locale: current, remaining: remaining - 1);
+  }
 
   /// All live NPCs this session — owned by the spawner, exposed for the
   /// rules system (ViolationDetector).
@@ -97,8 +150,9 @@ class TileManager extends Component {
     _spawnNextTile();
   }
 
-  TileBase _createTile(TileType type) =>
-      TileRegistry.create(type, TileSpawnContext(maneuver: testManeuver, rng: _rng));
+  TileBase _createTile(TileType type, LocaleType locale) => TileRegistry.create(
+      type,
+      TileSpawnContext(maneuver: testManeuver, rng: _rng, locale: locale));
 
   void _activateTile(TileBase tile) {
     tile.onActivate();
@@ -111,9 +165,12 @@ class TileManager extends Component {
   void _spawnInitialTile() {
     // Normal play opens in the driving-school parking lot; test mode opens on
     // the chosen tile (or the first tile of a sequenced course) instead.
+    final locale = _nextLocale();
     final tile = _isSequenced
-        ? _createTile(_nextSequencedType())
-        : (testMode != null ? _createTile(testMode!) : StartTile());
+        ? _createTile(_nextSequencedType(), locale)
+        : (testMode != null
+            ? _createTile(testMode!, locale)
+            : StartTile(locale: locale));
     // First tile: canonical orientation, entry anchor at the world origin.
     tile.place(
       worldPosition: -tile.entryAnchor,
@@ -175,11 +232,76 @@ class TileManager extends Component {
     _checkHandOff();
     _advanceNpcsAcrossSeams(dt);
     _updateNpcSensors(dt);
+    _updatePedestrians(dt);
     _updatePlayerLaneChange();
     _cullDistantNpcs();
     _cullTrailingTiles();
     _tickRefill(dt);
     _updateDebugState();
+  }
+
+  /// Tick every live tile's pedestrian spawners (active and trailing, so a
+  /// walker keeps moving after the player passes its tile) and add newcomers,
+  /// then resolve pedestrian-vs-car yielding so nobody walks through a car.
+  void _updatePedestrians(double dt) {
+    for (final spawners in _pedSpawners.values) {
+      for (final s in spawners) {
+        for (final ped in s.update(dt, playerCar.position)) {
+          world.add(ped);
+        }
+      }
+    }
+    _updatePedestrianCarAvoidance();
+  }
+
+  /// A road-crossing pedestrian respects a car's bounding box: it holds at the
+  /// box edge rather than walking through it. Checks the pedestrian's next step
+  /// against the player's box (held indefinitely — never walk through you, so no
+  /// unfair crash) and against NPC boxes (held, with a timeout in the pedestrian
+  /// that breaks a rare mutual stand-off). In the normal case an NPC yields and
+  /// stops BEHIND the pedestrian, so its box is never on the path and the
+  /// pedestrian crosses freely in front. A *moving* player drives into the
+  /// holding pedestrian → collision, so failing to yield is still punished.
+  void _updatePedestrianCarAvoidance() {
+    if (pedestrians.isEmpty) return;
+    const pw = 12.0; // pedestrian footprint
+    for (final ped in pedestrians) {
+      final fwd = Vector2(cos(ped.angle), sin(ped.angle));
+      final probe = ped.position + fwd * kPedStepProbe; // its next step
+      final byPlayer = obbOverlap(probe, pw, pw, ped.angle, playerCar.position,
+          kCarWidth, kCarLength, playerCar.angle);
+      bool byNpc = false;
+      if (!byPlayer) {
+        for (final npc in _spawner.allNpcs) {
+          if (obbOverlap(probe, pw, pw, ped.angle, npc.position, kCarWidth,
+              kCarLength, npc.angle)) {
+            byNpc = true;
+            break;
+          }
+        }
+      }
+      ped.setBlocked(player: byPlayer, npc: byNpc);
+
+      // Personal space: the player's car body is inside the pedestrian's bubble
+      // (~2× its footprint) → the ped startles, popping the SAME red "!" an NPC
+      // car throws when cut off. Proximity-based (not the old next-step probe), so
+      // it catches a hard stop a hair away — you're still MOVING as you cross the
+      // 20u line, you just can't brake to zero instantly. Gated on motion so a
+      // pedestrian merely walking past a car that is already STOPPED and waiting
+      // (you yielded) does NOT startle them. Rising edge → once per intrusion.
+      final wasStartled = ped.startledByPlayer;
+      final intruded = pointToObbDistance(ped.position, playerCar.position,
+              kCarWidth, kCarLength, playerCar.angle) <=
+          kPedPersonalSpace;
+      ped.setStartled(intruded);
+      if (intruded && !wasStartled && playerCar.speed > kStopSpeedThreshold) {
+        world.add(ReactionBubble(
+          target: ped,
+          player: playerCar,
+          reaction: DriverReaction.failedToYield,
+        ));
+      }
+    }
   }
 
   /// Gate the player's steering by position: the active tile decides whether a
@@ -196,7 +318,7 @@ class TileManager extends Component {
 
   void _updateNpcSensors(double dt) {
     for (final tile in _activeTiles) {
-      tile.updateNpcSensors(dt, playerCar, _spawner.allNpcs);
+      tile.updateNpcSensors(dt, playerCar, _spawner.allNpcs, pedestrians);
     }
   }
 
@@ -383,7 +505,10 @@ class TileManager extends Component {
   void _spawnNextTile() {
     final prevTile = _activeTiles.last;
 
-    TileBase tile = _createTile(_pickNextTileType(prevTile));
+    // Roll the locale once for this slot; the placement-retry re-rolls the tile
+    // *type/geometry* to dodge overlaps but must keep the same locale.
+    final locale = _nextLocale();
+    TileBase tile = _createTile(_pickNextTileType(prevTile), locale);
     TilePlacement placement = TileConnector.computeNextPlacement(prevTile, tile);
 
     // A sequenced course is a fixed ordered list — re-rolling a tile to dodge an
@@ -395,7 +520,7 @@ class TileManager extends Component {
           attempt < _placementRetries &&
               TileConnector.overlapsAny(placement, liveTiles);
           attempt++) {
-        tile = _createTile(_pickNextTileType(prevTile));
+        tile = _createTile(_pickNextTileType(prevTile), locale);
         placement = TileConnector.computeNextPlacement(prevTile, tile);
       }
     }
@@ -415,6 +540,60 @@ class TileManager extends Component {
     world.add(tile);
     _activeTiles.add(tile);
     _spawnNpcsForTile(tile);
+    _createPedSpawnersForTile(tile);
+  }
+
+  /// Build the pedestrian spawners a freshly-placed tile needs. Pedestrians
+  /// leave the buildings: each spawner draws from the tile's [buildingExitRoutes]
+  /// (door → sidewalk → along it), split by whether the route crosses a road —
+  /// road-crossers go in the rules registry (cars/player yield, hitting one is a
+  /// crash), sidewalk-only strollers in the visual-only registry. Tiles with no
+  /// buildings fall back to the plain crossing/sidewalk lines. Placement is set
+  /// (place() runs before _addTile), so splines map to world space.
+  void _createPedSpawnersForTile(TileBase tile) {
+    final spawners = <PedestrianSpawner>[];
+    final urban = tile.locale == LocaleType.urban;
+
+    final exits = tile.buildingExitRoutes;
+    final crossing = <Spline>[];
+    final sidewalk = <Spline>[];
+    if (exits.isNotEmpty) {
+      for (final e in exits) {
+        (e.crossesRoad ? crossing : sidewalk).add(e.spline);
+      }
+    } else {
+      // No buildings (interurban, or none placed) — walk the plain lines.
+      crossing.addAll(tile.crossingPaths);
+      sidewalk.addAll(tile.sidewalkPaths);
+    }
+
+    if (crossing.isNotEmpty) {
+      spawners.add(PedestrianSpawner(
+        paths: crossing,
+        spawnIntervalSeconds: kCrossingPedInterval,
+        registry: pedestrians,
+        maxActive: kCrossingPedMax,
+        minSpawnDist: kPedMinSpawnDist,
+        worldOffset: tile.position,
+        worldAngle: tile.orientation,
+        rng: _rng,
+      ));
+    }
+    if (sidewalk.isNotEmpty) {
+      spawners.add(PedestrianSpawner(
+        paths: sidewalk,
+        spawnIntervalSeconds: urban
+            ? kAmbientPedIntervalUrban
+            : kAmbientPedIntervalInterurban,
+        registry: ambientPedestrians,
+        maxActive: urban ? kAmbientPedMaxUrban : kAmbientPedMaxInterurban,
+        minSpawnDist: kPedMinSpawnDist,
+        worldOffset: tile.position,
+        worldAngle: tile.orientation,
+        rng: _rng,
+      ));
+    }
+    if (spawners.isNotEmpty) _pedSpawners[tile] = spawners;
   }
 
   void _spawnNpcsForTile(TileBase tile) {
@@ -512,12 +691,23 @@ class TileManager extends Component {
   void _cullTrailingTiles() {
     _trailingTiles.removeWhere((tile) {
       if (playerCar.position.distanceTo(tile.worldCenter) > kTileSize * 1.2) {
+        _disposePedSpawners(tile);
         tile.removeFromParent();
         debugPrint('[TILE] removed trailing: ${tile.tileType.name}');
         return true;
       }
       return false;
     });
+  }
+
+  /// Remove a culled tile's pedestrian spawners and their live walkers, so
+  /// scenery never outlives the tile it belongs to.
+  void _disposePedSpawners(TileBase tile) {
+    final spawners = _pedSpawners.remove(tile);
+    if (spawners == null) return;
+    for (final s in spawners) {
+      s.dispose();
+    }
   }
 
   // ---------------------------------------------------------------------------

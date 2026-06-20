@@ -8,8 +8,10 @@ import '../../core/spline.dart';
 import '../../core/game_bus.dart';
 import '../../cars/npc_car.dart';
 import '../../cars/player_car.dart';
+import '../../pedestrians/pedestrian.dart';
 import '../../feedback/driver_reaction.dart';
 import '../../feedback/reaction_bubble.dart';
+import '../environment.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
 import '../scenarios/scenario_base.dart';
@@ -40,6 +42,7 @@ class IntersectionTile extends TileBase {
   IntersectionTile({
     this.maneuver = Maneuver.straight,
     super.tileType = TileType.intersection4way,
+    super.locale,
     ScenarioBase? scenario,
   }) : super(scenario: scenario ?? StopSignScenario());
 
@@ -56,6 +59,7 @@ class IntersectionTile extends TileBase {
         maneuver: ctx.maneuver ??
             Maneuver.values[
                 (ctx.rng ?? math.Random()).nextInt(Maneuver.values.length)],
+        locale: ctx.locale,
         scenario:
             ScenarioRegistry.forTile(TileType.intersection4way, rng: ctx.rng),
       ),
@@ -90,12 +94,30 @@ class IntersectionTile extends TileBase {
   /// an approaching car is considered a "threat" for right-of-way purposes.
   static const double _approachDistance = 260.0;
 
-  /// Painted stop line offset from the conflict-box edge (world units).
-  static const double _stopLineGap = 12.0;
+  /// Extra outward setback applied to the stop line ALONE (not the crossing) on
+  /// urban junctions, so a car halted at the line sits a little further back from
+  /// the zebra — more space between a waiting car and the crossing it's about to
+  /// take. Urban only; interurban keeps its tight line.
+  static const double _urbanStopLineExtra = 20.0;
+
+  /// Painted stop line offset from the conflict-box edge (world units). Set so
+  /// the line — and a car stopped behind it — sits clear of (outside) the zebra
+  /// crossing, instead of a stopped car straddling it. The zebra band reaches
+  /// _crosswalkOffset + _crosswalkHalf (=156 urban) from the tile centre; the
+  /// line at _halfBox + _stopLineGap (=182 urban) sits beyond it, and a car halts
+  /// ~a setback further back, so the whole car clears the band. Carries the
+  /// crossing's [_crosswalkShift] (so the line tracks the crossing outward) PLUS
+  /// an urban-only [_urbanStopLineExtra], so on urban junctions the line sits a
+  /// little further beyond the zebra than the crossing alone would put it.
+  /// Interurban keeps the original tight 44 (shift 0, no extra).
+  double get _stopLineGap =>
+      44.0 +
+      _crosswalkShift +
+      (locale == LocaleType.urban ? _urbanStopLineExtra : 0.0);
 
   /// Tile-local Y of the player's stop line on the south approach. The yield
   /// rule is evaluated at this line, so the painted marking == the rule.
-  static const double _playerStopLineY = _cy + _halfBox + _stopLineGap;
+  double get _playerStopLineY => _cy + _halfBox + _stopLineGap;
 
   /// How close to the stop line (along the approach) a complete stop must be
   /// made to count as stopping "at the sign" — ~1.5 car lengths. A full stop
@@ -103,8 +125,120 @@ class IntersectionTile extends TileBase {
   /// rolling stop, not a legal one.
   static const double _stopCreditWindow = kCarLength * 1.5;
 
-  /// Radius of the rounded curb drawn at each intersection corner.
+  /// Radius of the rounded curb at each grass-side intersection corner (the
+  /// pavement/grass corner, rounded off toward the tile corner).
   static const double _curbRadius = 72.0;
+
+  /// Radius of the curb return at each inner corner — where a pavement corner
+  /// pokes into the conflict box and turning traffic sweeps around it. Smaller
+  /// than the grass-side [_curbRadius] (it lives inside the 40-wide pavement
+  /// corner), just enough to take the sharp 90° off the curb the cars turn past.
+  static const double _curbReturnRadius = 36.0;
+
+  // ---------------------------------------------------------------------------
+  // Pedestrian crossings (urban locale only)
+  // ---------------------------------------------------------------------------
+
+  /// Half-thickness of the zebra band.
+  static const double _crosswalkHalf = 18.0;
+
+  /// How far the urban crossing + stop line are pushed OUTWARD from the box,
+  /// toward the approaching traffic, to open up a small junction. With the
+  /// crossing right at the box edge the box reads cramped and a car that just
+  /// cleared a zebra and stops is left with its tail on the stripes; pushing it
+  /// out grows the box→crossing gap to ~40px (20px box→zebra-near-edge, plus the
+  /// 18px band) so the junction breathes. The sidewalk centreline rides along
+  /// with the crossing (a crossing is where a sidewalk meets a road), so this
+  /// also carries the sidewalk ~18px past the 40px pavement's outer edge — an
+  /// accepted trade for the more spacious box (the user chose the bigger push).
+  ///
+  /// LOWER BOUND: the pedestrian probe drops zebra direction-attribution, which
+  /// is only safe while `_crosswalkOffset - kPedYieldLateral - _laneOffset >
+  /// _zebraBandMargin` (asserted in [_pedStopOnPath]). Don't shrink this so far
+  /// that a perpendicular crossing's band reaches the parallel lane, or
+  /// corner-strollers will false-trip cars/the player.
+  static const double _urbanCrosswalkShift = 38.0;
+
+  /// The crossing + stop line are pushed this far OUTWARD from the box. Single
+  /// knob — both move by it, and everything (detection bands, ped routes,
+  /// frontages, the entry-commit gap, the painted markings) derives from the
+  /// two offsets. URBAN ONLY: interurban junctions have no crossings, so they
+  /// keep the original tight geometry (the user liked it) — the shift is 0 there.
+  /// Tune urban spaciousness via [_urbanCrosswalkShift] alone.
+  double get _crosswalkShift =>
+      locale == LocaleType.urban ? _urbanCrosswalkShift : 0.0;
+
+  /// Sidewalk centreline offset from the tile centre: the zebra bands sit here,
+  /// and the pedestrian routes run along these lines, so a crossing is just where
+  /// a sidewalk passes over a road. Pushed [_crosswalkShift] toward the building
+  /// side of the pavement (from the pavement centre) so the crossing sits clear
+  /// of the box (urban; interurban stays at the pavement centre, 100).
+  double get _crosswalkOffset =>
+      _halfBox + kPavementWidth * 0.5 + _crosswalkShift; // 138 urban / 100 rural
+  double get _swLo => _cx - _crosswalkOffset; // 462 urban / 500 rural
+  double get _swHi => _cx + _crosswalkOffset; // 738 urban / 700 rural
+
+  static List<Vector2> _hLine(double y) => [
+        Vector2(0, y),
+        Vector2(kTileSize * 0.33, y),
+        Vector2(kTileSize * 0.66, y),
+        Vector2(kTileSize, y),
+      ];
+  static List<Vector2> _vLine(double x) => [
+        Vector2(x, 0),
+        Vector2(x, kTileSize * 0.33),
+        Vector2(x, kTileSize * 0.66),
+        Vector2(x, kTileSize),
+      ];
+
+  /// Pedestrian routes = the four full-length sidewalk centrelines, each
+  /// direction. A walker spawns at a tile edge (off-screen as the tile streams
+  /// in), strolls the sidewalk like a normal city pedestrian, crosses the one
+  /// road its sidewalk passes over (at the zebra), and continues to the far
+  /// edge — instead of popping onto the zebra and vanishing. Built lazily on
+  /// first use (urban only); stable spline identity for the tile's lifetime.
+  late final List<Spline> _crossingSplines = [
+    for (final pts in [_hLine(_swLo), _hLine(_swHi), _vLine(_swLo), _vLine(_swHi)]) ...[
+      Spline(pts),
+      Spline(pts.reversed.toList()),
+    ],
+  ];
+
+  @override
+  List<Spline> get crossingPaths =>
+      locale == LocaleType.urban ? _crossingSplines : const [];
+
+  /// Grass corners outside the curb (corner edge at cx±(_halfBox+pavement)=480)
+  /// — scattered with trees in the interurban locale.
+  @override
+  List<Rect> get decorationZones => const [
+        Rect.fromLTWH(0, 0, 480, 480),
+        Rect.fromLTWH(720, 0, kTileSize - 720, 480),
+        Rect.fromLTWH(0, 720, 480, kTileSize - 720),
+        Rect.fromLTWH(720, 720, kTileSize - 720, kTileSize - 720),
+      ];
+
+  /// Urban building blocks — one per corner, each fronting a different sidewalk
+  /// (and so feeding a different zebra), sat on the outer side of that sidewalk.
+  @override
+  List<Frontage> get buildingFrontages => [
+        // SE corner → south sidewalk (player's crossing).
+        Frontage(
+            a: Offset(760, _swHi),
+            b: Offset(1160, _swHi),
+            outward: Offset(0, 1)),
+        // NW corner → north sidewalk.
+        Frontage(
+            a: Offset(40, _swLo), b: Offset(440, _swLo), outward: Offset(0, -1)),
+        // SW corner → west sidewalk.
+        Frontage(
+            a: Offset(_swLo, 760),
+            b: Offset(_swLo, 1160),
+            outward: Offset(-1, 0)),
+        // NE corner → east sidewalk.
+        Frontage(
+            a: Offset(_swHi, 40), b: Offset(_swHi, 440), outward: Offset(1, 0)),
+      ];
 
   // ---------------------------------------------------------------------------
   // Splines — one per NPC heading, plus the player's straight-through path.
@@ -379,8 +513,26 @@ class IntersectionTile extends TileBase {
     double dt,
     PlayerCar playerCar,
     List<NpcCar> allNpcs,
+    List<Pedestrian> pedestrians,
   ) {
-    super.updateNpcSensors(dt, playerCar, allNpcs); // lead-car gaps first
+    // lead-car gaps etc. Crossing-pedestrian yielding is handled in the apply
+    // loop below: a car is HELD at its stop line while a pedestrian is on the
+    // zebra ahead (it never stops on the crossing — once past the line it
+    // commits and clears).
+    super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
+
+    // Cache for the debug zebra-box overlay (rendered separately).
+    if (kDebugMode) _debugPeds = pedestrians;
+
+    // A crossing pedestrian is ahead in the player's path → a legitimate wait
+    // (and what exempts the road-block penalty). The SAME one probe the NPCs
+    // use, walked along the player's own spline, so entry and exit (turn)
+    // crossings are both covered without a separate cone.
+    final playerSpline = playerCar.spline;
+    _pedBlockingPlayer = playerSpline != null &&
+        _pedStopOnPath(
+                playerSpline, playerCar.distanceTravelled, pedestrians) !=
+            null;
 
     // Collect every vehicle that sits on one of *this* tile's lanes together
     // with its heading and identity, in tile-local coordinates.
@@ -428,20 +580,34 @@ class IntersectionTile extends TileBase {
       final heading = Heading.values[npc.laneIndex];
       final localPos = worldToLocal(npc.position);
       final z = _zoneOf(heading, localPos);
+
+      // One mechanism for pedestrians: the distance to the nearest crossing
+      // pedestrian ahead on this car's own path, or null if the way is clear.
+      // Always evaluated — entry crossing, exit crossing, mid-turn, all the same
+      // probe — and the brain brakes to it like any other stop-target.
+      final pedStop = _pedStopAhead(npc, pedestrians);
+
       if (z != _Zone.approaching) {
-        // In the box or past it — cruise through. (stopTargetDistance was
-        // already cleared by super.updateNpcSensors.) Hold a calm speed while
-        // still inside the box, resume normal speed once past it.
+        // In the box or past the line — the all-way-stop hold is behind it; the
+        // only thing left to stop for is a pedestrian on a crossing still ahead.
         npc.brain.intersectionRuleActive = false;
         npc.brain.hasRightOfWay = true;
+        npc.brain.stopTargetDistance = pedStop;
         npc.brain.speedCap = z == _Zone.inBox ? kNpcTurnSpeed : null;
         continue;
       }
+
+      // Approaching the line. Hold at the line until the arbiter releases this
+      // car (the all-way-stop turn order); a released car has no car-stop. The
+      // pedestrian probe is layered on as a second stop-target and the brain
+      // brakes to whichever is nearer — so a released car still stops short of a
+      // busy crossing, and once its reference point is on the stripes the probe
+      // skips that band (commit & clear), so it never freezes straddling them.
       final go = going.contains(npc);
+      final carStop = go ? null : _gapToStopLine(heading, localPos);
       npc.brain.intersectionRuleActive = !go;
       npc.brain.hasRightOfWay = go;
-      npc.brain.stopTargetDistance =
-          go ? null : _gapToStopLine(heading, localPos);
+      npc.brain.stopTargetDistance = _nearerStop(carStop, pedStop);
       // A released car eases out of the line at a calm crossing speed rather
       // than flooring it — especially when it's taking a hesitating player's turn.
       npc.brain.speedCap = go ? kNpcTurnSpeed : null;
@@ -463,10 +629,11 @@ class IntersectionTile extends TileBase {
     // NOT exempt — letting that earn a road-block fault is the deadlock-breaker.
     // A normal crossing clears well within the road-block grace.
     _playerMustWait = pZone == _Zone.approaching ||
-        (pZone == _Zone.inBox && _otherCarInBox);
+        (pZone == _Zone.inBox && _otherCarInBox) ||
+        _pedBlockingPlayer; // waiting for someone on the crossing is rational
 
     // Player stop-sign violation detection.
-    _checkPlayerStop(playerCar, samples);
+    _checkPlayerStop(playerCar, samples, pedestrians);
   }
 
   /// Sentinel identity for the player in the arrival-order bookkeeping.
@@ -767,8 +934,141 @@ class IntersectionTile extends TileBase {
 
   bool _playerMustWait = false;
 
+  /// A pedestrian on/entering a zebra is ahead of the player (urban crosswalks).
+  bool _pedBlockingPlayer = false;
+
   @override
   bool get playerMustWait => _playerMustWait;
+
+  // ---------------------------------------------------------------------------
+  // Crossing-pedestrian detection — only pedestrians actually ON (or stepping
+  // onto) a zebra count, never ones strolling a sidewalk parallel to traffic.
+  // ---------------------------------------------------------------------------
+
+  /// Widening of a zebra's detection box beyond the painted stripes, so a
+  /// pedestrian about to step onto it (off the curb) is yielded to as well.
+  static const double _zebraEnterMargin = 24.0; // along the crossing (ends)
+  static const double _zebraBandMargin = _crosswalkHalf + 8.0; // across (band)
+
+  /// Which of the four zebra detection bands tile-local [p] lies on — 0 = south,
+  /// 1 = north, 2 = west, 3 = east — or -1 if none. The band is the painted
+  /// stripe widened beyond it (±[_zebraEnterMargin] along the crossing so a
+  /// pedestrian about to step off the curb counts, ±[_zebraBandMargin] across),
+  /// i.e. the *detection box* drawn by [_drawZebraDebug]. A zebra spans the road
+  /// it crosses and is a thin band at ±[_crosswalkOffset] from the centre.
+  int _zebraIndexOf(Vector2 p) {
+    final dx = p.x - _cx, dy = p.y - _cy;
+    // South/North zebras cross the vertical road (x within the road span).
+    if (dx.abs() <= _halfBox + _zebraEnterMargin) {
+      if ((dy - _crosswalkOffset).abs() <= _zebraBandMargin) return 0; // south
+      if ((dy + _crosswalkOffset).abs() <= _zebraBandMargin) return 1; // north
+    }
+    // East/West zebras cross the horizontal road (y within the road span).
+    if (dy.abs() <= _halfBox + _zebraEnterMargin) {
+      if ((dx + _crosswalkOffset).abs() <= _zebraBandMargin) return 2; // west
+      if ((dx - _crosswalkOffset).abs() <= _zebraBandMargin) return 3; // east
+    }
+    return -1;
+  }
+
+  /// Whether tile-local [p] is on any of the four zebra detection bands.
+  bool _pedOnZebra(Vector2 p) => _zebraIndexOf(p) >= 0;
+
+  /// THE pedestrian hazard probe — the one mechanism for "is a crossing
+  /// pedestrian in my way, and how far ahead?". Walks [sp] forward from
+  /// [travelled] and returns the distance to the NEAR EDGE of the first zebra
+  /// crossing ahead that has a pedestrian within [kPedYieldLateral] of this lane
+  /// — i.e. a fixed hold line before the busy crossing — or null if clear. It
+  /// holds at the crossing's edge, NOT at the pedestrian's body: targeting the
+  /// body let a car nuzzle up to whoever was nearest and creep forward almost
+  /// into the next pedestrian as a queue shuffled across.
+  ///
+  /// One mechanism, one knob ([kPedYieldLateral], the lane half-width), used
+  /// identically by NPC cars and the player. Because it walks the *actual path*
+  /// it follows turns for free (a left-turn's exit crossing is just further along
+  /// the spline), and because it is re-run every frame it re-holds for a
+  /// pedestrian who steps on after the agent has rolled forward. It SKIPS the
+  /// crossing the reference point is currently inside — commit & clear, so a car
+  /// never freezes straddling the stripes — which is what lets one always-on
+  /// probe replace the old behind-the-line / in-the-box staging. Direction
+  /// attribution is unnecessary: the path only meets a zebra where that zebra
+  /// spans this lane's road, so a sidewalk stroller or a corner-walker is
+  /// laterally too far from every path point to register.
+  double? _pedStopOnPath(
+      Spline sp, double travelled, List<Pedestrian> pedestrians) {
+    if (pedestrians.isEmpty) return null;
+    final total = sp.totalLength;
+    if (total <= 0) return null;
+
+    // Pedestrians physically on a zebra band (positional — the lateral path test
+    // below does the lane-scoping), in tile-local coords.
+    final zebraPeds = <Vector2>[
+      for (final ped in pedestrians)
+        if (_pedOnZebra(worldToLocal(ped.position))) worldToLocal(ped.position),
+    ];
+    if (zebraPeds.isEmpty) return null; // (only urban junctions reach here)
+
+    // Dropping zebra direction-attribution is safe ONLY while a parallel lane
+    // clears every PERPENDICULAR crossing's band by more than the lateral
+    // conflict — else a corner-stroller on a crossing road could false-trip this
+    // probe (the very thing direction-attribution used to prevent). Holds at the
+    // current urban offset (138 → margin 24); a future shrink of
+    // [_urbanCrosswalkShift] must keep it true (it was ~4u at the old shift 18).
+    assert(
+        _crosswalkOffset - kPedYieldLateral - _laneOffset > _zebraBandMargin,
+        'crosswalk offset too small: a perpendicular crossing reaches the '
+        'parallel lane — corner-strollers would false-trip the pedestrian '
+        'probe. Widen _urbanCrosswalkShift or restore direction attribution.');
+
+    const conflict = kPedYieldLateral; // lane half-width — the single knob
+    const step = 10.0;
+    // Commit through the crossing the reference point is currently ON: skip
+    // bands until the path leaves the one (if any) it starts in. A crossing not
+    // yet reached is NOT skipped → stop short of it and hold.
+    bool committing =
+        _pedOnZebra(sp.evaluate((travelled / total).clamp(0.0, 1.0)));
+    // The near edge (first on-path point) of the crossing currently being
+    // scanned — the FIXED line the car holds at if that crossing is busy. Reset
+    // each time the path leaves a crossing, so it always names the one ahead.
+    double? bandEntry;
+    for (double d = step;
+        d <= kPedYieldScanDistance && travelled + d <= total;
+        d += step) {
+      final pt = sp.evaluate(((travelled + d) / total).clamp(0.0, 1.0));
+      final onZebra = _pedOnZebra(pt);
+      if (committing) {
+        if (!onZebra) committing = false; // left the crossing we were clearing
+        continue;
+      }
+      if (!onZebra) {
+        bandEntry = null; // off the crossing — reset for the next one ahead
+        continue;
+      }
+      bandEntry ??= d; // first point of this crossing = its near-edge hold line
+      for (final pl in zebraPeds) {
+        // Anyone on this crossing within the lane → hold at its near edge, not
+        // at the person, so the car never creeps up to a queueing pedestrian.
+        if (pl.distanceTo(pt) <= conflict) return bandEntry;
+      }
+    }
+    return null;
+  }
+
+  /// [_pedStopOnPath] for an NPC, along its current movement spline.
+  double? _pedStopAhead(NpcCar npc, List<Pedestrian> pedestrians) {
+    final sp = npc.spline;
+    if (sp == null) return null;
+    return _pedStopOnPath(sp, npc.distanceTravelled, pedestrians);
+  }
+
+  /// The nearer of two optional stop-target distances (smaller wins; null = no
+  /// stop). Lets the all-way-stop hold and the pedestrian probe be folded into
+  /// the single [NpcBrain.stopTargetDistance] the brain brakes to.
+  static double? _nearerStop(double? a, double? b) {
+    if (a == null) return b;
+    if (b == null) return a;
+    return a < b ? a : b;
+  }
 
   /// True once the player has left the conflict box on any side other than
   /// the south entry — i.e. the maneuver through the box is complete.
@@ -782,6 +1082,7 @@ class IntersectionTile extends TileBase {
 
   bool _playerViolationFired = false;
   bool _yieldViolationFired = false;
+  bool _pedYieldFired = false;
   bool _stopLineCrossed = false;
   bool _clearedReported = false;
 
@@ -792,9 +1093,49 @@ class IntersectionTile extends TileBase {
   bool _cameToStop = false;
   double _minApproachSpeed = double.infinity;
 
+  /// The crossing pedestrian the player is failing to give way to, or null — the
+  /// basis for the give-way fault. Combines BOTH yield signals (a ped triggers it
+  /// either way):
+  ///   (a) PROXIMITY — the ped is in the player's personal-space bubble
+  ///       ([Pedestrian.startledByPlayer], car body within [kPedPersonalSpace]).
+  ///       Covers a ped right in the player's path, including dead-centre of the
+  ///       lane where the direction test in (b) degenerates.
+  ///   (b) THE ZEBRA CROSSING — the player's nose is committed onto a zebra band
+  ///       (a yielding car stops BEHIND it) and a ped on that band is in the
+  ///       player's lane AND still walking TOWARD the player's path ("the player's
+  ///       way"). Catches cutting in front of a ped who started across from the
+  ///       far side with a gap, which proximity alone misses.
+  /// Excluded by construction: pass-behind (the ped walks off the player's lane,
+  /// so (b)'s direction test is negative and it's outside (a)'s bubble), and a ped
+  /// far on the other half (outside the lane scope). The caller gates on the
+  /// player MOVING — a stopped, yielding car can't fail to yield.
+  Pedestrian? _playerCuttingOffPed(
+      PlayerCar playerCar, List<Pedestrian> pedestrians) {
+    if (pedestrians.isEmpty) return null;
+    final fwd = Vector2(math.cos(playerCar.angle), math.sin(playerCar.angle));
+    final noseOnCrossing = _pedOnZebra(
+            worldToLocal(playerCar.position + fwd * (kCarLength / 2))) ||
+        _pedOnZebra(worldToLocal(playerCar.position));
+    for (final ped in pedestrians) {
+      if (!_pedOnZebra(worldToLocal(ped.position))) continue;
+      // (a) Proximity — right in the player's way (also the dead-centre case).
+      if (ped.startledByPlayer) return ped;
+      // (b) The zebra crossing — committed onto the band, ped in the lane and
+      // still walking toward the player's path.
+      if (!noseOnCrossing) continue;
+      final d = ped.position - playerCar.position;
+      final perp = d - fwd * d.dot(fwd); // offset from the player's lane line
+      if (perp.length > kPedYieldLateral) continue; // not in the player's lane
+      final pedFwd = Vector2(math.cos(ped.angle), math.sin(ped.angle));
+      if (pedFwd.dot(-perp) > 0) return ped; // coming the player's way
+    }
+    return null;
+  }
+
   void _checkPlayerStop(
     PlayerCar playerCar,
     List<_VehicleSample> samples,
+    List<Pedestrian> pedestrians,
   ) {
     final playerLocal = worldToLocal(playerCar.position);
     final localY = playerLocal.y;
@@ -805,6 +1146,7 @@ class IntersectionTile extends TileBase {
     if (localY > _playerStopLineY + _approachDistance) {
       _playerViolationFired = false;
       _yieldViolationFired = false;
+      _pedYieldFired = false;
       _stopLineCrossed = false;
       _clearedReported = false;
       _cameToStop = false;
@@ -869,6 +1211,40 @@ class IntersectionTile extends TileBase {
         _markYieldTargets(playerCar);
       }
     }
+
+    // Failed to give way to a pedestrian — FAILED-TO-YIELD via the zebra
+    // crossing. [_playerCuttingOffPed] finds a pedestrian the player drove a
+    // crossing in front of: on a zebra the player is committed to (nose on the
+    // band), in the player's lane, and still heading INTO the player's path ("the
+    // player's way"). Gated on the player MOVING — a stopped, yielding car can't
+    // fail. This is what the personal-space-only fault missed: cutting in front
+    // of a pedestrian who started across from the far side (e.g. a right-turn
+    // exit crossing) with more than a car's-width gap never tripped the 20u
+    // bubble, so it never faulted. Pass-behind (ped walking off the player's
+    // lane), a far ped on the other half, and a clean stop are all excluded by
+    // construction. Hitting one is a separate, fatal collision. Once per approach.
+    if (!_pedYieldFired && playerCar.speed > kStopSpeedThreshold) {
+      final cutOff = _playerCuttingOffPed(playerCar, pedestrians);
+      if (cutOff != null) {
+        _pedYieldFired = true;
+        debugPrint('[INTERSECTION] failed to give way to pedestrian '
+            '(cut across their crossing): '
+            'speed=${playerCar.speed.toStringAsFixed(0)}');
+        GameBus.instance
+            .emit(PedestrianYieldViolationEvent(speedAtLine: playerCar.speed));
+        // Show the ped reacting even on a GAP cut-off, where the proximity
+        // startle (TileManager) didn't fire because the car never got within
+        // kPedPersonalSpace — so a logged fault always has a visible "!".
+        final world = parent;
+        if (world != null && !cutOff.startledByPlayer) {
+          world.add(ReactionBubble(
+            target: cutOff,
+            player: playerCar,
+            reaction: DriverReaction.failedToYield,
+          ));
+        }
+      }
+    }
   }
 
   /// Drop a red "!" marker on every driver that had the right of way when the
@@ -904,8 +1280,12 @@ class IntersectionTile extends TileBase {
     _drawRoundedCurbs(canvas);
     _drawRoads(canvas);
     _drawIntersectionBox(canvas);
+    _drawCurbReturns(canvas); // round the inner corners cars turn around
     _drawMarkings(canvas);
     _drawStopLines(canvas);
+    _drawCrosswalks(canvas); // urban zebras (no-op interurban)
+    if (kDebugMode) _drawZebraDebug(canvas); // detection box overlay
+    drawDecorations(canvas); // grass-corner scenery
     _drawStopSigns(canvas);
     debugRenderSplines(canvas);
     if (kDebugMode) _drawDebugTurns(canvas);
@@ -913,6 +1293,55 @@ class IntersectionTile extends TileBase {
 
   /// Player's tile-local position, cached each frame for the debug overlay.
   Vector2? _debugPlayerLocal;
+
+  /// Pedestrians, cached each frame (debug only) for the zebra-box overlay.
+  List<Pedestrian> _debugPeds = const [];
+
+  /// DEBUG: paints each zebra's *detection box* — the widened band
+  /// [_zebraIndexOf] tests, not just the painted stripes — at heavy opacity, so
+  /// the actual "is this crossing busy?" geometry is visible. Red when a
+  /// pedestrian is on it (busy), amber when clear.
+  void _drawZebraDebug(Canvas canvas) {
+    if (locale != LocaleType.urban) return;
+    for (int idx = 0; idx < 4; idx++) {
+      final r = _zebraBandRect(idx);
+      // Busy = a pedestrian physically on this zebra band — matches the probe's
+      // positional [_pedOnZebra] test.
+      final busy = _debugPeds
+          .any((ped) => _zebraIndexOf(worldToLocal(ped.position)) == idx);
+      canvas.drawRect(
+          r,
+          Paint()
+            ..color =
+                busy ? const Color(0x99FF1744) : const Color(0x55FFC400));
+      canvas.drawRect(
+          r,
+          Paint()
+            ..color = busy ? const Color(0xFFFF1744) : const Color(0xCCFFC400)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 2);
+    }
+  }
+
+  /// Tile-local rect of zebra detection band [idx] (0=S,1=N,2=W,3=E) — matches
+  /// the bounds tested in [_zebraIndexOf].
+  Rect _zebraBandRect(int idx) {
+    const along = _halfBox + _zebraEnterMargin; // road span + step-on margin
+    switch (idx) {
+      case 0: // south (horizontal band)
+        return Rect.fromLTRB(_cx - along, _cy + _crosswalkOffset - _zebraBandMargin,
+            _cx + along, _cy + _crosswalkOffset + _zebraBandMargin);
+      case 1: // north
+        return Rect.fromLTRB(_cx - along, _cy - _crosswalkOffset - _zebraBandMargin,
+            _cx + along, _cy - _crosswalkOffset + _zebraBandMargin);
+      case 2: // west (vertical band)
+        return Rect.fromLTRB(_cx - _crosswalkOffset - _zebraBandMargin, _cy - along,
+            _cx - _crosswalkOffset + _zebraBandMargin, _cy + along);
+      default: // east
+        return Rect.fromLTRB(_cx + _crosswalkOffset - _zebraBandMargin, _cy - along,
+            _cx + _crosswalkOffset + _zebraBandMargin, _cy + along);
+    }
+  }
 
   /// DEBUG: floats each vehicle's **place in line** beside it — 1 = next to go,
   /// 2 = after that … — or "GO" once released. This is the rank among the cars
@@ -996,7 +1425,7 @@ class IntersectionTile extends TileBase {
     // Push fully past the sidewalk onto the grass corner so the octagon never
     // overlaps the road or pavement (sign inner edge sits at the grass edge).
     const outward = kRoadWidth / 2 + kPavementWidth + _signRadius;
-    const back = _halfBox + _stopLineGap + _signSetback; // before the stop line
+    final back = _halfBox + _stopLineGap + _signSetback; // before the stop line
     // Driver's right, with traffic on the right-hand side of the road.
     final right = Offset(-travel.dy, travel.dx);
     final center = const Offset(_cx, _cy) - travel * back + right * outward;
@@ -1050,8 +1479,40 @@ class IntersectionTile extends TileBase {
   void _drawGround(Canvas canvas) {
     canvas.drawRect(
       Rect.fromLTWH(0, 0, kTileSize, kTileSize),
-      Paint()..color = const Color(0xFF4CAF50),
+      Paint()..color = groundColor,
     );
+  }
+
+  /// Zebra crossings on all four approaches — urban only. Stripes run parallel
+  /// to the traffic that would stop for them (vertical bars on the N/S
+  /// approaches, horizontal bars on the E/W approaches).
+  void _drawCrosswalks(Canvas canvas) {
+    if (locale != LocaleType.urban) return;
+    final paint = Paint()..color = const Color(0xFFFFFFFF);
+    _zebra(canvas, paint, _cy + _crosswalkOffset, horizontalBand: true);
+    _zebra(canvas, paint, _cy - _crosswalkOffset, horizontalBand: true);
+    _zebra(canvas, paint, _cx + _crosswalkOffset, horizontalBand: false);
+    _zebra(canvas, paint, _cx - _crosswalkOffset, horizontalBand: false);
+  }
+
+  void _zebra(Canvas canvas, Paint paint, double centreAlong,
+      {required bool horizontalBand}) {
+    const stripe = 12.0, gap = 10.0;
+    const roadMin = _cx - _halfBox; // 520 (same for cy by symmetry)
+    const roadMax = _cx + _halfBox; // 680
+    if (horizontalBand) {
+      final top = centreAlong - _crosswalkHalf;
+      for (double x = roadMin + 4; x + stripe <= roadMax; x += stripe + gap) {
+        canvas.drawRect(
+            Rect.fromLTWH(x, top, stripe, _crosswalkHalf * 2), paint);
+      }
+    } else {
+      final left = centreAlong - _crosswalkHalf;
+      for (double y = roadMin + 4; y + stripe <= roadMax; y += stripe + gap) {
+        canvas.drawRect(
+            Rect.fromLTWH(left, y, _crosswalkHalf * 2, stripe), paint);
+      }
+    }
   }
 
   void _drawPavement(Canvas canvas) {
@@ -1105,12 +1566,26 @@ class IntersectionTile extends TileBase {
     _curbWedge(canvas, right, bottom, 1, 1, p); // bottom-right
   }
 
+  /// Rounds the four INNER corners — where a pavement corner pokes into the
+  /// conflict box and turning traffic sweeps past — by shaving the sharp 90° tip
+  /// off the pavement and repainting it road colour, leaving a rounded curb
+  /// return. (The grass-side corners are handled by [_drawRoundedCurbs].) Each
+  /// ([sx], [sy]) points from the box corner OUT into its pavement-corner block.
+  void _drawCurbReturns(Canvas canvas) {
+    final road = Paint()..color = const Color(0xFF424242);
+    const lo = _cx - _halfBox; // 520 — box near edge
+    const hi = _cx + _halfBox; // 680 — box far edge / pavement inner edge
+    _curbWedge(canvas, hi, hi, 1, 1, road, _curbReturnRadius); // SE
+    _curbWedge(canvas, lo, hi, -1, 1, road, _curbReturnRadius); // SW
+    _curbWedge(canvas, hi, lo, 1, -1, road, _curbReturnRadius); // NE
+    _curbWedge(canvas, lo, lo, -1, -1, road, _curbReturnRadius); // NW
+  }
+
   /// Fills the wedge between a sharp corner at ([cornerX], [cornerY]) and a
-  /// quarter-circle arc of [_curbRadius], where ([sx], [sy]) point from the
-  /// corner into the grass quadrant being rounded off.
-  void _curbWedge(
-      Canvas canvas, double cornerX, double cornerY, int sx, int sy, Paint p) {
-    const r = _curbRadius;
+  /// quarter-circle arc of radius [r] (default [_curbRadius]), where ([sx], [sy])
+  /// point from the corner into the quadrant being rounded off.
+  void _curbWedge(Canvas canvas, double cornerX, double cornerY, int sx, int sy,
+      Paint p, [double r = _curbRadius]) {
     final center = Offset(cornerX + sx * r, cornerY + sy * r);
     final p1 = Offset(cornerX, cornerY + sy * r); // on the vertical curb
     final p2 = Offset(cornerX + sx * r, cornerY); // on the horizontal curb
@@ -1137,7 +1612,7 @@ class IntersectionTile extends TileBase {
       ..color = const Color(0xFFFFFFFF)
       ..strokeWidth = 8
       ..strokeCap = StrokeCap.butt;
-    const g = _stopLineGap;
+    final g = _stopLineGap;
 
     // N-bound (player) — south of box, east half.
     canvas.drawLine(Offset(_cx, _cy + _halfBox + g),

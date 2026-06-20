@@ -24,13 +24,24 @@ enum TileType {
   // Future: trafficLight, roundabout, toll, cop, dealer
 }
 
+/// The setting a tile is dressed for. Orthogonal to both geometry ([TileType])
+/// and the graded rule (scenario) — it only drives visual dressing and
+/// pedestrian density:
+///   * [interurban]: green countryside, scattered trees, passers-by very rare.
+///   * [urban]: city surroundings (buildings), people on the sidewalks, and —
+///     on intersections — zebra crossings everyone must yield to.
+enum LocaleType { interurban, urban }
+
 /// Per-spawn variation passed to tile factories. Tiles pick their own
-/// randomness from [rng]; [maneuver] pins the commanded maneuver (test mode).
+/// randomness from [rng]; [maneuver] pins the commanded maneuver (test mode);
+/// [locale] dresses the tile (urban vs interurban) — see [LocaleType].
 class TileSpawnContext {
-  const TileSpawnContext({this.maneuver, this.rng});
+  const TileSpawnContext(
+      {this.maneuver, this.rng, this.locale = LocaleType.interurban});
 
   final Maneuver? maneuver;
   final Random? rng;
+  final LocaleType locale;
 }
 
 typedef TileFactory = TileBase Function(TileSpawnContext ctx);

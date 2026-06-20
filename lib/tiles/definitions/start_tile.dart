@@ -4,6 +4,7 @@ import '../../core/constants.dart';
 import '../../core/spline.dart';
 import '../../cars/npc_car.dart';
 import '../../cars/player_car.dart';
+import '../../pedestrians/pedestrian.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
 import '../scenarios/free_drive_scenario.dart';
@@ -18,7 +19,7 @@ import '../scenarios/free_drive_scenario.dart';
 ///
 /// Canonical frame: origin top-left, x → right, y → down, forward = -y.
 class StartTile extends TileBase {
-  StartTile()
+  StartTile({super.locale})
       : super(
           tileType: TileType.start,
           scenario: FreeDriveScenario(),
@@ -30,7 +31,7 @@ class StartTile extends TileBase {
   static void register() {
     TileRegistry.register(
       TileType.start,
-      (_) => StartTile(),
+      (ctx) => StartTile(locale: ctx.locale),
       entryLanes: 1,
       exitLanes: 1,
       spawnable: false,
@@ -70,8 +71,9 @@ class StartTile extends TileBase {
   bool _rolledOut = false;
 
   @override
-  void updateNpcSensors(double dt, PlayerCar playerCar, List<NpcCar> allNpcs) {
-    super.updateNpcSensors(dt, playerCar, allNpcs);
+  void updateNpcSensors(double dt, PlayerCar playerCar, List<NpcCar> allNpcs,
+      List<Pedestrian> pedestrians) {
+    super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
     if (!_rolledOut && worldToLocal(playerCar.position).y < _startY - 30) {
       _rolledOut = true; // pulled away — normal rules from here
     }
@@ -96,7 +98,7 @@ class StartTile extends TileBase {
   void _drawGround(Canvas canvas) {
     canvas.drawRect(
       Rect.fromLTWH(0, 0, kTileSize, kTileSize),
-      Paint()..color = const Color(0xFF4CAF50),
+      Paint()..color = groundColor,
     );
   }
 

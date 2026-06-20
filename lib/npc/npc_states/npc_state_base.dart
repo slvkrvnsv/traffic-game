@@ -17,7 +17,6 @@ class NpcSensors {
     required this.currentSpeed,
     required this.currentT,
     required this.leadCarDistance,   // units to bumper of car ahead (null = no car)
-    required this.pedestrianInPath,  // true if pedestrian is crossing ahead
     required this.intersectionRuleActive, // true if tile has an active yield/stop rule
     required this.hasRightOfWay,     // true = NPC may proceed; false = must yield
     required this.isRedLight,        // true if NPC is at a red light
@@ -29,7 +28,6 @@ class NpcSensors {
   final double currentSpeed;
   final double currentT;
   final double? leadCarDistance;
-  final bool pedestrianInPath;
   final bool intersectionRuleActive;
   final bool hasRightOfWay;
   final bool isRedLight;

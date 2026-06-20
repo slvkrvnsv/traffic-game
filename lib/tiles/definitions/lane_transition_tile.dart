@@ -6,6 +6,7 @@ import '../../core/game_bus.dart';
 import '../../core/spline.dart';
 import '../../cars/npc_car.dart';
 import '../../cars/player_car.dart';
+import '../../pedestrians/pedestrian.dart';
 import '../road_signs.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
@@ -36,7 +37,8 @@ import '../scenarios/merge_scenario.dart';
 ///
 /// Coordinate system: origin = bottom-left of tile. X → right, Y → up (forward).
 class LaneTransitionTile extends TileBase {
-  LaneTransitionTile({required this.merging, ScenarioBase? scenario})
+  LaneTransitionTile(
+      {required this.merging, ScenarioBase? scenario, super.locale})
       : super(
           tileType:
               merging ? TileType.laneMerge : TileType.laneExtend,
@@ -55,6 +57,7 @@ class LaneTransitionTile extends TileBase {
       (ctx) => LaneTransitionTile(
         merging: true,
         scenario: ScenarioRegistry.forTile(TileType.laneMerge, rng: ctx.rng),
+        locale: ctx.locale,
       ),
       entryLanes: 2, // 2→1 lane drop
       exitLanes: 1,
@@ -64,6 +67,7 @@ class LaneTransitionTile extends TileBase {
       (ctx) => LaneTransitionTile(
         merging: false,
         scenario: ScenarioRegistry.forTile(TileType.laneExtend, rng: ctx.rng),
+        locale: ctx.locale,
       ),
       entryLanes: 1, // 1→2 lane addition
       exitLanes: 2,
@@ -269,8 +273,10 @@ class LaneTransitionTile extends TileBase {
     double dt,
     PlayerCar playerCar,
     List<NpcCar> allNpcs,
+    List<Pedestrian> pedestrians,
   ) {
-    super.updateNpcSensors(dt, playerCar, allNpcs); // ordinary lead-car gaps
+    // ordinary lead-car gaps (no crossing peds on a connector)
+    super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
 
     if (merging) {
       // Player-direction merge (north): the ending outer lane gives way to
@@ -381,6 +387,14 @@ class LaneTransitionTile extends TileBase {
   // Rendering
   // ---------------------------------------------------------------------------
 
+  // Grass margins clear of the widest part of the tapering road (max half-width
+  // = kLaneWidth*2 + pavement ⇒ outer edge at cx±200), with a little slack.
+  @override
+  List<Rect> get decorationZones => const [
+        Rect.fromLTWH(0, 0, 380, kTileSize),
+        Rect.fromLTWH(820, 0, kTileSize - 820, kTileSize),
+      ];
+
   @override
   void render(Canvas canvas) {
     _drawGround(canvas);
@@ -394,13 +408,14 @@ class LaneTransitionTile extends TileBase {
       merging ? RoadSign.laneEndsRight : RoadSign.laneAddedRight,
       const Offset(868, 980),
     );
+    drawDecorations(canvas);
     debugRenderSplines(canvas);
   }
 
   void _drawGround(Canvas canvas) {
     canvas.drawRect(
       Rect.fromLTWH(0, 0, kTileSize, kTileSize),
-      Paint()..color = const Color(0xFF4CAF50),
+      Paint()..color = groundColor,
     );
   }
 

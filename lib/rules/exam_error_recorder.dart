@@ -42,6 +42,12 @@ class ExamErrorRecorder extends Component {
         ExamErrorType.roadBlocking,
         detail: 'stood still ${e.duration.toStringAsFixed(1)}s')));
 
+    // Forced a pedestrian crossing (drove through without yielding). Logged as a
+    // failed-to-yield fault; hitting the pedestrian is a separate collision.
+    _subs.add(GameBus.instance.on<PedestrianYieldViolationEvent>().listen((e) =>
+        _record(ExamErrorType.failedToYield,
+            speed: e.speedAtLine, detail: 'pedestrian')));
+
     // Unsafe driving — an NPC threw the "!" because the player forced a hard
     // brake (cut-off). Logged independently of any scenario verdict.
     _subs.add(GameBus.instance.on<DriverReactionEvent>().listen(

@@ -11,7 +11,11 @@ import 'world/game_world.dart';
 
 /// Root Flame game.
 class TrafficGame extends FlameGame {
-  TrafficGame({this.testMode, this.testManeuver, this.testSequence});
+  TrafficGame(
+      {this.testMode,
+      this.testManeuver,
+      this.testSequence,
+      this.testLocale});
 
   /// If set, loop this tile type in test mode.
   final TileType? testMode;
@@ -21,6 +25,9 @@ class TrafficGame extends FlameGame {
 
   /// If set, loop this ordered sequence of tile types (test mode course).
   final List<TileType>? testSequence;
+
+  /// If set, dress every tile as this locale (test mode).
+  final LocaleType? testLocale;
 
   late final GameWorld _world;
   late final CameraController _cameraController;
@@ -39,7 +46,8 @@ class TrafficGame extends FlameGame {
     _world = GameWorld(
         testMode: testMode,
         testManeuver: testManeuver,
-        testSequence: testSequence);
+        testSequence: testSequence,
+        testLocale: testLocale);
 
     final camera = CameraComponent(world: _world)
       ..viewfinder.zoom = kCameraZoom

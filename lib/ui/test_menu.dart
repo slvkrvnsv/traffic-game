@@ -12,9 +12,17 @@ class _TestEntry {
   final Map<String, dynamic> arguments;
 }
 
-/// Test mode: select a tile type (and maneuver) to loop endlessly.
-class TestMenuScreen extends StatelessWidget {
+/// Test mode: select a tile type (and maneuver) to loop endlessly, plus the
+/// locale (urban / interurban) every tile is dressed as.
+class TestMenuScreen extends StatefulWidget {
   const TestMenuScreen({super.key});
+
+  @override
+  State<TestMenuScreen> createState() => _TestMenuScreenState();
+}
+
+class _TestMenuScreenState extends State<TestMenuScreen> {
+  LocaleType _locale = LocaleType.interurban;
 
   /// A looped tile-type entry (optionally with a pinned maneuver).
   static _TestEntry _tile(String label, IconData icon, TileType type,
@@ -70,30 +78,93 @@ class TestMenuScreen extends StatelessWidget {
         ),
         centerTitle: true,
       ),
-      body: entries.isEmpty
-          ? const Center(
-              child: Text(
-                'No tiles registered yet.',
-                style: TextStyle(color: Colors.white54),
-              ),
-            )
-          : ListView.separated(
-              padding: const EdgeInsets.all(24),
-              itemCount: entries.length,
-              separatorBuilder: (_, _) => const SizedBox(height: 16),
-              itemBuilder: (context, i) {
-                final entry = entries[i];
-                return _TileCard(
-                  label: entry.label,
-                  icon: entry.icon,
-                  onTap: () => Navigator.pushNamed(
-                    context,
-                    '/game',
-                    arguments: entry.arguments,
+      body: Column(
+        children: [
+          _LocaleToggle(
+            value: _locale,
+            onChanged: (l) => setState(() => _locale = l),
+          ),
+          Expanded(
+            child: entries.isEmpty
+                ? const Center(
+                    child: Text(
+                      'No tiles registered yet.',
+                      style: TextStyle(color: Colors.white54),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.all(24),
+                    itemCount: entries.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 16),
+                    itemBuilder: (context, i) {
+                      final entry = entries[i];
+                      return _TileCard(
+                        label: entry.label,
+                        icon: entry.icon,
+                        onTap: () => Navigator.pushNamed(
+                          context,
+                          '/game',
+                          // Ride the chosen locale along with the tile args.
+                          arguments: {...entry.arguments, 'testLocale': _locale},
+                        ),
+                      );
+                    },
                   ),
-                );
-              },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Two-segment urban / interurban picker shown above the tile list.
+class _LocaleToggle extends StatelessWidget {
+  const _LocaleToggle({required this.value, required this.onChanged});
+
+  final LocaleType value;
+  final ValueChanged<LocaleType> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+      child: Row(
+        children: [
+          for (final l in LocaleType.values)
+            Expanded(
+              child: Padding(
+                padding: EdgeInsets.only(right: l == LocaleType.values.first ? 12 : 0),
+                child: GestureDetector(
+                  onTap: () => onChanged(l),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: value == l
+                          ? const Color(0xFF42A5F5)
+                          : const Color(0xFF161B22),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: value == l
+                            ? const Color(0xFF42A5F5)
+                            : const Color(0xFF30363D),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Text(
+                      l == LocaleType.urban ? 'URBAN' : 'INTERURBAN',
+                      style: TextStyle(
+                        color: value == l ? Colors.white : Colors.white60,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 2,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             ),
+        ],
+      ),
     );
   }
 }

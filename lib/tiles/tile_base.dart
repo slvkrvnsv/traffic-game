@@ -7,8 +7,19 @@ import '../core/maneuver.dart';
 import '../core/spline.dart';
 import '../cars/npc_car.dart';
 import '../cars/player_car.dart';
+import '../pedestrians/pedestrian.dart';
+import 'environment.dart';
 import 'scenarios/scenario_base.dart';
 import 'tile_registry.dart';
+
+/// A pedestrian spawn route that starts at a building door. [crossesRoad] tags
+/// whether the route steps onto the carriageway (a zebra crossing → goes in the
+/// rules pedestrian registry), versus a sidewalk-only stroll (visual only).
+class PedSpawnRoute {
+  const PedSpawnRoute(this.spline, {required this.crossesRoad});
+  final Spline spline;
+  final bool crossesRoad;
+}
 
 /// Abstract base for all road tiles.
 ///
@@ -21,11 +32,17 @@ abstract class TileBase extends PositionComponent {
   TileBase({
     required this.tileType,
     required this.scenario,
+    this.locale = LocaleType.interurban,
     super.position,
   }) : super(size: Vector2.all(kTileSize));
 
   final TileType tileType;
   final ScenarioBase scenario;
+
+  /// The setting this tile is dressed for (urban vs interurban) — drives
+  /// [groundColor], the procedural [decorationZones] dressing, and pedestrian
+  /// density. Set once at construction from the spawn context.
+  final LocaleType locale;
 
   List<Spline> get playerPaths;
   List<Spline> get npcPaths;
@@ -143,6 +160,13 @@ abstract class TileBase extends PositionComponent {
         local.x * _sinO + local.y * _cosO,
       );
 
+  /// Rotate a world-frame direction vector into the tile's canonical frame
+  /// (rotation-only inverse of [directionToWorld] — no translation).
+  Vector2 directionToLocal(Vector2 world) => Vector2(
+        world.x * _cosO + world.y * _sinO,
+        -world.x * _sinO + world.y * _cosO,
+      );
+
   Vector2 get worldEntry => localToWorld(entryAnchor);
   Vector2 get worldExit => localToWorld(exitAnchor);
   Vector2 get worldExitDirection => directionToWorld(exitDirection);
@@ -170,6 +194,115 @@ abstract class TileBase extends PositionComponent {
   /// [speedLimitKmh] converted to world units/sec, or null when unlimited.
   double? get speedLimitUnits =>
       speedLimitKmh == null ? null : kmhToUnits(speedLimitKmh!);
+
+  // ---------------------------------------------------------------------------
+  // Environment dressing (locale-driven) — see EnvironmentDecorator
+  // ---------------------------------------------------------------------------
+
+  /// Ground fill, by locale: countryside grass vs a paler urban ground.
+  Color get groundColor => locale == LocaleType.urban
+      ? const Color(0xFF7C8A6E) // muted urban green/khaki
+      : const Color(0xFF4CAF50); // grass green
+
+  /// Tile-local rectangles of off-road grass scattered with trees (interurban).
+  /// Must lie clear of the road, pavement and every spline. Default: none.
+  List<Rect> get decorationZones => const [];
+
+  /// Street frontages lined with building blocks (urban) — a row of roofs along
+  /// each, facing the sidewalk. Default: none.
+  List<Frontage> get buildingFrontages => const [];
+
+  /// Tile-local splines pedestrians stroll along the pavement (visual only,
+  /// never entering the carriageway). Default: none.
+  List<Spline> get sidewalkPaths => const [];
+
+  /// Tile-local splines pedestrians use to *cross the road* — rule-relevant
+  /// (cars and the player must yield, hitting one is a crash). Only urban
+  /// intersections author these. Default: none.
+  List<Spline> get crossingPaths => const [];
+
+  EnvironmentDecorator? _decor;
+
+  /// Deterministic per-placement seed so scenery is stable as tiles recycle
+  /// (never regenerated per frame). [position] is fixed once [place]d.
+  int get _decorSeed =>
+      (position.x.round() * 73856093) ^ (position.y.round() * 19349663);
+
+  /// The tile's scenery, built once (after [place], so the seed is stable).
+  /// Shared by rendering and the building-exit pedestrian routes.
+  EnvironmentDecorator get decoration => _decor ??= EnvironmentDecorator(
+        locale: locale,
+        seed: _decorSeed,
+        zones: decorationZones,
+        frontages: buildingFrontages,
+      );
+
+  /// Draw locale scenery on top of the ground. Call near the end of [render]
+  /// (after the road, before debug overlays). No-op when there's nothing to draw.
+  void drawDecorations(Canvas canvas) {
+    if (decorationZones.isEmpty && buildingFrontages.isEmpty) return;
+    decoration.render(canvas);
+  }
+
+  /// Routes for pedestrians *leaving the buildings*: from a building door out to
+  /// the nearest sidewalk/crossing line, then along it to the far edge (crossing
+  /// a road at the zebra when that line is a crossing). Built once after [place].
+  /// Empty on tiles with no buildings or no walkable lines — callers fall back to
+  /// the plain sidewalk/crossing splines.
+  late final List<PedSpawnRoute> buildingExitRoutes = _buildExitRoutes();
+
+  List<PedSpawnRoute> _buildExitRoutes() {
+    final footprints = decoration.buildingFootprints;
+    if (footprints.isEmpty) return const [];
+    // Each candidate line, tagged with whether stepping onto it crosses a road.
+    final lines = <(Spline, bool)>[
+      for (final s in sidewalkPaths) (s, false),
+      for (final s in crossingPaths) (s, true),
+    ];
+    if (lines.isEmpty) return const [];
+
+    final routes = <PedSpawnRoute>[];
+    for (final b in footprints) {
+      final c = b.center;
+      Spline? best;
+      bool bestCrosses = false;
+      Vector2 join = Vector2.zero();
+      double bestD2 = double.infinity;
+      for (final (line, crosses) in lines) {
+        for (int i = 0; i <= 12; i++) {
+          final p = line.evaluate(i / 12);
+          final d2 = (p.x - c.dx) * (p.x - c.dx) + (p.y - c.dy) * (p.y - c.dy);
+          if (d2 < bestD2) {
+            bestD2 = d2;
+            best = line;
+            bestCrosses = crosses;
+            join = p;
+          }
+        }
+      }
+      if (best == null) continue;
+      // Door: the point on the building edge nearest the join (so they step out
+      // toward the sidewalk), nudged just outside the footprint.
+      final door = Vector2(
+        join.x.clamp(b.left, b.right),
+        join.y.clamp(b.top, b.bottom),
+      );
+      final out = (join - door);
+      if (out.length2 > 1) door.add(out.normalized() * 3);
+      // Walk to the far end of the line (the longer way → it crosses the road
+      // when the line is a crossing).
+      final e0 = best.evaluate(0.0), e1 = best.evaluate(1.0);
+      final far = e0.distanceToSquared(join) >= e1.distanceToSquared(join)
+          ? e0
+          : e1;
+      final mid = (join + far) * 0.5;
+      routes.add(PedSpawnRoute(
+        Spline([door, join, mid, far]),
+        crossesRoad: bestCrosses,
+      ));
+    }
+    return routes;
+  }
 
   // ---------------------------------------------------------------------------
   // Update
@@ -281,6 +414,7 @@ abstract class TileBase extends PositionComponent {
     double dt,
     PlayerCar playerCar,
     List<NpcCar> allNpcs,
+    List<Pedestrian> pedestrians,
   ) {
     for (final npc in npcs) {
       npc.brain.leadCarDistance = _leadCarGap(npc, playerCar, allNpcs);

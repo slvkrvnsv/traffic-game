@@ -74,6 +74,21 @@ bool obbOverlap(
   return true;
 }
 
+/// Shortest distance from point [p] to the oriented box centred at [boxCenter]
+/// ([w] = full width across, [l] = full length along [angle]). Returns 0 when
+/// the point is inside the box. Used for circular proximity (e.g. a pedestrian's
+/// personal-space bubble against a car body).
+double pointToObbDistance(
+    Vector2 p, Vector2 boxCenter, double w, double l, double angle) {
+  final d = p - boxCenter;
+  final cosA = math.cos(angle), sinA = math.sin(angle);
+  final along = d.x * cosA + d.y * sinA; // along the length axis
+  final across = -d.x * sinA + d.y * cosA; // along the width axis
+  final ox = math.max(across.abs() - w / 2, 0.0);
+  final oy = math.max(along.abs() - l / 2, 0.0);
+  return math.sqrt(ox * ox + oy * oy);
+}
+
 /// Rotate a point [p] around [pivot] by [angle] radians.
 Vector2 rotateAround(Vector2 p, Vector2 pivot, double angle) {
   final dx = p.x - pivot.x;

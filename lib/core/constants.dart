@@ -118,6 +118,65 @@ const double kSeamWaitTimeoutSeconds = 1.5;
 const int kPedestrianPriority = 2;
 
 // ---------------------------------------------------------------------------
+// Locale (urban / interurban) — see LocaleType
+// ---------------------------------------------------------------------------
+/// In free-drive the locale is rolled in stretches of this many consecutive
+/// tiles so the world doesn't flip city↔countryside every tile; when a stretch
+/// ends the next is re-rolled (it may repeat or flip). Test mode pins one locale.
+const int kLocaleRunLength = 3;
+
+// ---------------------------------------------------------------------------
+// Pedestrians
+// ---------------------------------------------------------------------------
+/// Pedestrian walk-speed range (world units/sec). Authored to look like walking
+/// next to traffic: at kSpeedToKmh this is ~3.6–6.8 km/h (a stroll to a brisk
+/// walk), well under the cars' 30+ km/h. The spread gives each pedestrian a
+/// visibly different pace.
+const double kPedMinWalkSpeed = 18.0;
+const double kPedMaxWalkSpeed = 34.0;
+/// How far ahead (units, along the path) a vehicle watches for a pedestrian on a
+/// zebra it will cross. Long enough to reach the EXIT crossing from the stop
+/// line, so a turning car decides to hold at the line instead of committing to a
+/// turn and then stopping mid-crossing.
+const double kPedYieldScanDistance = 260.0;
+/// Lateral tolerance (units) from a vehicle's heading axis within which a
+/// pedestrian counts as "in my path". Kept under a lane width so a car only
+/// yields to someone actually stepping into its lane (on the zebra) — NOT to a
+/// pedestrian strolling the adjacent sidewalk, which sits ~60 units off the lane.
+const double kPedYieldLateral = kLaneWidth * 0.6; // 48
+/// Spawn cadence for crossing pedestrians on an urban intersection (seconds).
+const double kCrossingPedInterval = 1.8;
+/// Max simultaneous crossing pedestrians per intersection (they leave the corner
+/// buildings, walk the sidewalks and cross the zebras — a busy city corner).
+const int kCrossingPedMax = 10;
+/// Pedestrians spawn no closer than this to the player. They emerge from
+/// building doors (off the road, to the side), so this can be modest — a person
+/// appearing in a doorway reads naturally, unlike a car popping into a lane.
+const double kPedMinSpawnDist = 240.0;
+
+/// A pedestrian respects a car's bounding box: it holds at the box rather than
+/// walking into it. This is how far ahead (its next step) it probes for a car.
+const double kPedStepProbe = 10.0;
+/// Radius of a pedestrian's personal-space bubble (~2× the ~12u footprint). When
+/// the PLAYER's car body comes within this of a crossing pedestrian, the
+/// pedestrian startles (pops the "!") — even if the car isn't on their exact
+/// next step and even if it has already stopped a hair away. Tune up if cars
+/// crowding pedestrians still read as "no reaction", down if a properly-stopped
+/// car (nose ~30u back behind the line) wrongly startles a passing crosser.
+const double kPedPersonalSpace = 20.0;
+/// A pedestrian held by an NPC car this long (a rare mutual stand-off) gives up
+/// and proceeds, so nothing freezes forever. (Holding for the PLAYER never times
+/// out — a pedestrian must never walk through you and trigger an unfair crash.)
+const double kPedHoldTimeout = 2.5;
+/// Spawn cadence for ambient sidewalk walkers, by locale (seconds). Urban
+/// streets are busy; interurban roads see the occasional rambler.
+const double kAmbientPedIntervalUrban = 1.8;
+const double kAmbientPedIntervalInterurban = 14.0;
+/// Max simultaneous ambient walkers per tile, by locale.
+const int kAmbientPedMaxUrban = 10;
+const int kAmbientPedMaxInterurban = 2;
+
+// ---------------------------------------------------------------------------
 // Lane change (player) — kinematic steering
 //
 // The finger sets a steering intent that turns the car's *nose*. The car only

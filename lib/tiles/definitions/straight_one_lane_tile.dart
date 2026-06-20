@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flame/components.dart';
 import '../../core/constants.dart';
 import '../../core/spline.dart';
+import '../environment.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
 import '../scenarios/scenario_base.dart';
@@ -15,7 +16,7 @@ import '../scenarios/free_drive_scenario.dart';
 ///
 /// Coordinate system: origin = bottom-left of tile. X → right, Y → up (forward).
 class StraightOneLaneTile extends TileBase {
-  StraightOneLaneTile({ScenarioBase? scenario})
+  StraightOneLaneTile({ScenarioBase? scenario, super.locale})
       : super(
           tileType: TileType.straight1Lane,
           scenario: scenario ?? FreeDriveScenario(),
@@ -27,6 +28,7 @@ class StraightOneLaneTile extends TileBase {
       (ctx) => StraightOneLaneTile(
         scenario:
             ScenarioRegistry.forTile(TileType.straight1Lane, rng: ctx.rng),
+        locale: ctx.locale,
       ),
       // Now free-drive spawnable: the lane-match chainer only places it after a
       // 1-lane exit, so it never seams a 1-lane end onto a 2-lane start.
@@ -68,6 +70,37 @@ class StraightOneLaneTile extends TileBase {
   @override
   Vector2 get exitAnchor => Vector2(_playerX, 0);
 
+  static const double _roadOuterLeft = _cx - kRoadWidth / 2 - kPavementWidth; // 480
+  static const double _roadOuterRight = _cx + kRoadWidth / 2 + kPavementWidth; // 720
+  static const double _walkLeftX = _cx - kRoadWidth / 2 - kPavementWidth * 0.5; // 500
+  static const double _walkRightX = _cx + kRoadWidth / 2 + kPavementWidth * 0.5; // 700
+
+  @override
+  List<Rect> get decorationZones => const [
+        Rect.fromLTWH(0, 0, _roadOuterLeft, kTileSize),
+        Rect.fromLTWH(_roadOuterRight, 0, kTileSize - _roadOuterRight, kTileSize),
+      ];
+
+  @override
+  List<Frontage> get buildingFrontages => const [
+        Frontage(
+            a: Offset(_walkLeftX, 0),
+            b: Offset(_walkLeftX, kTileSize),
+            outward: Offset(-1, 0)),
+        Frontage(
+            a: Offset(_walkRightX, 0),
+            b: Offset(_walkRightX, kTileSize),
+            outward: Offset(1, 0)),
+      ];
+
+  @override
+  List<Spline> get sidewalkPaths => [
+        _northbound(_walkLeftX),
+        _southbound(_walkLeftX),
+        _northbound(_walkRightX),
+        _southbound(_walkRightX),
+      ];
+
   // ---------------------------------------------------------------------------
   // Rendering
   // ---------------------------------------------------------------------------
@@ -78,13 +111,14 @@ class StraightOneLaneTile extends TileBase {
     _drawPavement(canvas);
     _drawRoad(canvas);
     _drawMarkings(canvas);
+    drawDecorations(canvas);
     debugRenderSplines(canvas);
   }
 
   void _drawGround(Canvas canvas) {
     canvas.drawRect(
       Rect.fromLTWH(0, 0, kTileSize, kTileSize),
-      Paint()..color = const Color(0xFF4CAF50),
+      Paint()..color = groundColor,
     );
   }
 

@@ -16,19 +16,33 @@ import '../tiles/tile_registry.dart';
 /// instance-scoped to this world, so a restart — which builds a fresh
 /// [GameWorld] — starts from a clean slate with no manual clearing.
 class GameWorld extends World {
-  GameWorld({this.testMode, this.testManeuver, this.testSequence});
+  GameWorld(
+      {this.testMode,
+      this.testManeuver,
+      this.testSequence,
+      this.testLocale});
 
   final TileType? testMode;
   final Maneuver? testManeuver;
   final List<TileType>? testSequence;
+
+  /// If set, pin every tile to this locale (test mode). Null → free-drive rolls
+  /// it in stretches (see TileManager).
+  final LocaleType? testLocale;
 
   late final PlayerCar playerCar;
   late final TileManager tileManager;
   late final ViolationDetector violationDetector;
   late final RuleValidator ruleValidator;
 
-  /// All live pedestrians in this world (see PedestrianSpawner).
+  /// Rule-relevant pedestrians (road crossings) — scanned by ViolationDetector
+  /// for collisions and road-block clearance.
   final List<Pedestrian> pedestrians = [];
+
+  /// Ambient sidewalk walkers — visual only, deliberately NOT scanned by the
+  /// rules system (clipping a sidewalk must never end the run, and they must not
+  /// register as a reason to wait on a clear road).
+  final List<Pedestrian> ambientPedestrians = [];
 
   @override
   Future<void> onLoad() async {
@@ -44,9 +58,12 @@ class GameWorld extends World {
     tileManager = TileManager(
       playerCar: playerCar,
       world: this,
+      pedestrians: pedestrians,
+      ambientPedestrians: ambientPedestrians,
       testMode: testMode,
       testManeuver: testManeuver,
       testSequence: testSequence,
+      testLocale: testLocale,
     );
     add(tileManager);
 
