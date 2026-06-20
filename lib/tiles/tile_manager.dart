@@ -255,32 +255,69 @@ class TileManager extends Component {
     _updatePedestrianPedAvoidance();
   }
 
-  /// Pedestrians don't walk through each other. Each ped probes its next step
-  /// against every other ped's footprint (both registries — a road-crosser and a
-  /// sidewalk stroller can meet at a corner) and holds if it would land on one.
-  /// The keep-right lateral offset every ped rides ([kPedLaneOffset]) means
-  /// head-on walkers on a shared centreline are already side-by-side, so their
-  /// forward probes miss and they pass freely; this pass catches the remaining
-  /// case — a faster walker catching a slower one on the same lane (only the
-  /// follower's probe hits, so only it holds; no deadlock) — plus perpendicular
-  /// corner conflicts, which the [kPedHoldTimeout] safety valve breaks.
+  /// Pedestrians never walk through each other and never freeze face-to-face: a
+  /// walker that ANTICIPATES converging too close with another (predicted from
+  /// both their velocities) leans aside — a side-step on top of its keep-right
+  /// offset — and keeps moving, easing back once they have passed. Both
+  /// registries are scanned together (a road-crosser and a sidewalk stroller can
+  /// meet at a corner). See [pedAvoidSideStep].
+  ///
+  /// Prediction runs on each ped's KEEP-RIGHT LANE position (centreline + base
+  /// offset, EXCLUDING the dynamic lean) and intended velocity, so the lean never
+  /// feeds back into its own detection — that feedback is what made an earlier,
+  /// proximity-based version oscillate ("bounce") instead of drifting apart.
   void _updatePedestrianPedAvoidance() {
     final all = <Pedestrian>[...pedestrians, ...ambientPedestrians];
     if (all.length < 2) return;
-    const minSq = kPedAvoidDist * kPedAvoidDist;
-    for (final ped in all) {
-      final fwd = Vector2(cos(ped.angle), sin(ped.angle));
-      final probe = ped.position + fwd * kPedStepProbe; // its next step
-      var blocked = false;
-      for (final other in all) {
-        if (identical(other, ped)) continue;
-        if (probe.distanceToSquared(other.position) < minSq) {
-          blocked = true;
-          break;
-        }
-      }
-      ped.setBlockedByPed(blocked);
+    final lanePos = <Vector2>[];
+    final vel = <Vector2>[];
+    for (final p in all) {
+      final a = p.splineAngle;
+      final c = p.splineCentrePosition;
+      lanePos.add(
+          Vector2(c.x - sin(a) * kPedLaneOffset, c.y + cos(a) * kPedLaneOffset));
+      vel.add(Vector2(cos(a) * p.walkSpeed, sin(a) * p.walkSpeed));
     }
+    for (var i = 0; i < all.length; i++) {
+      all[i].setAvoidance(pedAvoidSideStep(lanePos[i], vel[i], lanePos, vel));
+    }
+  }
+
+  /// The signed side-step (world units, +right of travel) a pedestrian at [pos]
+  /// moving at [vel] should lean to clear the MOST IMMINENT other walker it is
+  /// predicted to pass too close to — toward the side that opens the gap (or, for
+  /// a dead-on meeting, to the right). Returns 0 when every pass is already
+  /// clear. Anticipatory: for each other walker it computes the time of closest
+  /// approach from the relative velocity and only reacts if that approach is soon
+  /// ([kPedAvoidHorizon]), still ahead, and tighter than [kPedAvoidMiss]. Pure
+  /// geometry (no component state) so it is unit-testable; [positions]/
+  /// [velocities] are parallel and may include [pos] itself, skipped by identity.
+  static double pedAvoidSideStep(Vector2 pos, Vector2 vel,
+      List<Vector2> positions, List<Vector2> velocities) {
+    final speed = vel.length;
+    if (speed < 1e-6) return 0.0;
+    final fwd = vel / speed;
+    final right = Vector2(-fwd.y, fwd.x); // +lateralOffset direction
+    double? bestTca;
+    double sign = 1.0;
+    for (var i = 0; i < positions.length; i++) {
+      final op = positions[i];
+      if (identical(op, pos)) continue;
+      final rp = op - pos;
+      if (rp.dot(fwd) <= 0) continue; // only give way to someone ahead
+      final rv = velocities[i] - vel;
+      final vv = rv.dot(rv);
+      final tca = vv < 1e-6 ? 0.0 : -rp.dot(rv) / vv; // time of closest approach
+      if (tca < 0 || tca > kPedAvoidHorizon) continue; // past, or too far off
+      final ca = rp + rv * tca; // relative position at closest approach
+      if (ca.length > kPedAvoidMiss) continue; // will pass with room → ignore
+      if (bestTca == null || tca < bestTca) {
+        bestTca = tca;
+        final lat = ca.dot(right);
+        sign = lat > 0.5 ? -1.0 : 1.0; // step away from their side; dead-on → right
+      }
+    }
+    return bestTca == null ? 0.0 : sign * kPedSideStep;
   }
 
   /// A road-crossing pedestrian respects a car's bounding box: it holds at the

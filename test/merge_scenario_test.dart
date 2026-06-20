@@ -106,7 +106,10 @@ void main() {
       tile.npcs.addAll([merge, through]);
 
       tile.updateNpcSensors(1 / 60, player, tile.npcs, const []);
-      expect(merge.brain.signalLeftForMerge, isFalse);
+      // With the long indicator lead-in (kIndicatorSignalDistance), the merge
+      // car already blinks left at the wide entry — an early advance warning. The
+      // anti-freeze guarantee is about SPEED, not the signal: it must not brake.
+      expect(merge.brain.signalLeftForMerge, isTrue);
 
       merge.brain.update(1 / 60, merge);
       expect(merge.brain.desiredSpeed, greaterThan(merge.profileSpeed * 0.9),

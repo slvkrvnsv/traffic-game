@@ -159,22 +159,40 @@ const double kPedMinSpawnDist = 240.0;
 const double kPedStepProbe = 10.0;
 /// Keep-right lateral offset (world units) every pedestrian rides off its
 /// route's centreline. Two pedestrians meeting head-on on a shared centreline
-/// each keep to their own right, so they slide to OPPOSITE sides (2× this
-/// apart) and pass without overlapping instead of ghosting through each other.
-/// Kept small (< the ~12u footprint, and well inside the ±26u zebra detection
-/// band) so a crossing pedestrian still reads as on its zebra for the rules.
-const double kPedLaneOffset = 8.0;
-/// Centre-to-centre distance under which a pedestrian's next step would land in
-/// another pedestrian's footprint, so it holds. ~2× the ~6u footprint radius:
-/// the two figures would touch. Head-on walkers (now lane-separated above) stay
-/// outside this; a faster walker catching a slower one on the same lane holds.
-///
-/// LOAD-BEARING INVARIANT: `2 * kPedLaneOffset > kPedAvoidDist`. Two head-on
-/// walkers on a shared centreline end up `2 * kPedLaneOffset` apart; that gap
-/// must exceed this threshold or their forward probes trip each other at every
-/// meeting, re-introducing a mutual freeze (broken only by [kPedHoldTimeout])
-/// in place of a clean side-by-side pass. Don't retune one without the other.
-const double kPedAvoidDist = 12.0;
+/// each keep to their own right, so they slide to OPPOSITE sides (2× this apart)
+/// and pass cleanly without overlapping. Sized so that 2× exceeds the ~16u
+/// figure width (a visible gap on a head-on pass) yet base + [kPedSideStep]
+/// stays inside the 20u pavement half-width AND the ±26u zebra detection band
+/// (so a crossing pedestrian still reads as on its zebra for the rules).
+const double kPedLaneOffset = 10.0;
+/// Avoidance side-step (world units, signed). A walker that anticipates a near
+/// pass with another (closer than [kPedAvoidMiss] within [kPedAvoidHorizon])
+/// leans this far off the keep-right baseline — toward the side that OPENS the
+/// gap — and keeps walking, easing back once clear. This is how walkers slip past
+/// each other instead of freezing face-to-face or ghosting through. Base + this
+/// = 18 < pavement half (20) and
+/// < zebra band (26), so the lean never leaves the pavement or the rule band.
+const double kPedSideStep = 8.0;
+/// Predicted closest-approach distance (world units) below which a pedestrian
+/// treats another as a collision to avoid. Kept UNDER 2×[kPedLaneOffset] (=20)
+/// so two walkers that will pass on their own keep-right lanes (already 20 apart)
+/// are recognised as a clean pass and DON'T swerve — only a genuine near-miss
+/// (a same-lane catch-up or a converging corner) trips it. Predicting the MISS,
+/// not mere proximity, is what stops the nervous bouncing on ordinary passes.
+const double kPedAvoidMiss = 16.0;
+/// How far AHEAD IN TIME (seconds) a pedestrian looks for a converging walker.
+/// Anticipation window: prediction uses both walkers' velocities so they begin
+/// easing apart early and calmly, well before they would actually meet.
+const double kPedAvoidHorizon = 1.6;
+/// How fast (world units/sec) the side-step eases in and out. Gentle (under the
+/// walk speed) so the lean reads as a calm drift apart, not a sharp bounce — the
+/// anticipation window leaves ample time to complete it before the pass.
+const double kPedSideStepRate = 18.0;
+/// How long (seconds) a pedestrian holds its committed lean after the predicted
+/// threat clears. Bridges the brief instant when the other walker is alongside —
+/// neither ahead (so no new suggestion) nor yet passed — so the lean doesn't
+/// collapse and clip them just as they draw level.
+const double kPedAvoidLinger = 0.5;
 /// Radius of a pedestrian's personal-space bubble (~2× the ~12u footprint). When
 /// the PLAYER's car body comes within this of a crossing pedestrian, the
 /// pedestrian startles (pops the "!") — even if the car isn't on their exact
@@ -308,7 +326,7 @@ const double kReactCutInWindowSeconds = 1.2;
 // Indicator blink
 // ---------------------------------------------------------------------------
 const double kIndicatorBlinkPeriod = 0.5; // seconds per on/off cycle
-const double kIndicatorSignalDistance = 150.0; // units before turn → start blinking
+const double kIndicatorSignalDistance = 500.0; // units before turn → start blinking
 /// Headlight courtesy-flash on/off cycle (quicker than a turn signal) — an NPC
 /// flashing a hesitating player at an all-way stop to wave them on.
 const double kHeadlightFlashPeriod = 0.18;

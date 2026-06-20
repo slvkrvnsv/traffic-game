@@ -1047,7 +1047,7 @@ class IntersectionTile extends TileBase {
 
   /// Widening of a zebra's detection box beyond the painted stripes, so a
   /// pedestrian about to step onto it (off the curb) is yielded to as well.
-  static const double _zebraEnterMargin = 24.0; // along the crossing (ends)
+  static const double _zebraEnterMargin = 12.0; // along the crossing (ends)
   static const double _zebraBandMargin = _crosswalkHalf + 8.0; // across (band)
 
   /// Which of the four zebra detection bands tile-local [p] lies on — 0 = south,

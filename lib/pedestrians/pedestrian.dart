@@ -44,19 +44,30 @@ class Pedestrian extends PositionComponent with SplineFollower {
   // The pedestrian respects it — it holds rather than walking into the box.
   bool _blockedByPlayer = false;
   bool _blockedByNpc = false;
-  // Set each frame by TileManager: another pedestrian's footprint is on the next
-  // step. The pedestrian holds rather than walking into (overlapping) them. Kept
-  // SEPARATE from the car flags so the give-way fault (which keys off
-  // [blockedByPlayer]) is never confused by a ped held merely for another ped.
-  bool _blockedByPed = false;
-  // Independent timeout timers for the two breakable holds (NPC car / other ped).
-  // Each resets only when ITS OWN cause clears, so a long wait for one obstacle
-  // never eats into the stand-off grace owed to the other — a ped that just
-  // waited out an NPC car must still give a freshly-blocking ped its full
-  // kPedHoldTimeout before walking through it (otherwise it ghosts straight
-  // through, defeating the non-overlap hold).
+  // Pedestrian-vs-pedestrian avoidance. A ped NEVER stops for another ped (only
+  // for cars / the player) — it leans aside and keeps moving, so nobody freezes
+  // face-to-face or ghosts through. Kept apart from the car flags so the give-way
+  // fault (which keys off [blockedByPlayer]) is never confused by a ped lean.
+  //
+  // [_avoidSign] is the COMMITTED lean direction (+1 right / −1 left) for the
+  // current encounter: chosen once when a threat first appears and held until the
+  // walkers have passed AND the lean has eased back, so the figure drifts apart
+  // smoothly instead of bouncing as the instantaneous geometry flips mid-pass.
+  // [_avoidSuggested] is the raw per-frame suggestion from TileManager (a signed
+  // step when a converging walker is predicted within [kPedAvoidMiss], else 0).
+  // [_avoidLinger] holds the lean out for a moment after the suggestion clears,
+  // bridging the brief "alongside" instant when the other is neither ahead nor
+  // yet passed — without it the lean would collapse mid-pass and clip the other.
+  // [_threatened] (derived each frame in [update]) is what actually drives the
+  // lean out, and its release the lean back.
+  double _avoidSign = 0.0;
+  double _avoidSuggested = 0.0;
+  double _avoidLinger = 0.0;
+  bool _threatened = false;
+  // Timeout timer for the breakable NPC-car hold (a rare mutual stand-off). It
+  // resets when the car clears. Holding for the PLAYER never times out — a ped
+  // must never walk through you and trigger an unfair crash (see [update]).
   double _npcHoldTime = 0.0;
-  double _pedHoldTime = 0.0;
 
   // Set each frame by TileManager: the player's car body is inside this
   // pedestrian's personal-space bubble. Tracked so the startle "!" pops once per
@@ -68,9 +79,11 @@ class Pedestrian extends PositionComponent with SplineFollower {
     _blockedByNpc = npc;
   }
 
-  /// Set each frame by TileManager: another pedestrian's footprint is on this
-  /// pedestrian's next step. Tracked apart from the car flags (see [_blockedByPed]).
-  void setBlockedByPed(bool value) => _blockedByPed = value;
+  /// Set each frame by TileManager from [TileManager.pedAvoidSideStep]: a signed
+  /// suggested side-step (±[kPedSideStep]) when a converging walker is predicted
+  /// in this ped's path, or 0 when clear. The encounter state it feeds (commit,
+  /// linger, release) is resolved in [update], which has the frame delta.
+  void setAvoidance(double suggested) => _avoidSuggested = suggested;
 
   /// Whether the player's car is currently inside this pedestrian's personal
   /// space. Carries the previous frame's value for the rising-edge startle cue.
@@ -88,19 +101,37 @@ class Pedestrian extends PositionComponent with SplineFollower {
   @override
   void update(double dt) {
     super.update(dt);
-    // Tick each breakable hold on its own timer; reset the one whose cause cleared.
+    // Only a car (or the player) can STOP a pedestrian — it must never walk
+    // through a vehicle. Another pedestrian never stops it: it leans aside
+    // instead (see [setAvoidance]), so two walkers slip past without freezing or
+    // ghosting. The player hold never times out (no unfair crash); the NPC hold
+    // breaks after kPedHoldTimeout to clear a rare mutual stand-off.
     _npcHoldTime = _blockedByNpc ? _npcHoldTime + dt : 0.0;
-    _pedHoldTime = _blockedByPed ? _pedHoldTime + dt : 0.0;
-    final bool hold;
-    if (_blockedByPlayer) {
-      hold = true; // never walk through the player (no unfair crash)
+    final bool hold =
+        _blockedByPlayer || (_blockedByNpc && _npcHoldTime < kPedHoldTimeout);
+    // Resolve the avoidance encounter: a live suggestion commits a lean
+    // direction (held for the whole pass) and re-arms the linger; once the
+    // suggestion clears, the linger keeps the lean out across the brief alongside
+    // instant before finally releasing and letting it ease back.
+    if (_avoidSuggested != 0.0) {
+      _threatened = true;
+      _avoidLinger = kPedAvoidLinger;
+      if (_avoidSign == 0.0) _avoidSign = _avoidSuggested > 0.0 ? 1.0 : -1.0;
+    } else if (_avoidLinger > 0.0) {
+      _avoidLinger -= dt;
+      _threatened = true;
     } else {
-      // Hold while any active obstacle is still within its OWN stand-off timeout;
-      // once a cause times out it stops compelling a hold (breaking a rare mutual
-      // stand-off) without one obstacle's wait shortening the other's grace.
-      hold = (_blockedByNpc && _npcHoldTime < kPedHoldTimeout) ||
-          (_blockedByPed && _pedHoldTime < kPedHoldTimeout);
+      _threatened = false;
+      if ((lateralOffset - kPedLaneOffset).abs() < 0.5) _avoidSign = 0.0;
     }
+    // Ease the lateral offset toward the keep-right baseline, plus the committed
+    // side-step while threatened, capped so the lean tracks at a calm drift
+    // (never a sideways snap). Runs even while held for a car, so a stopped ped
+    // can still lean clear of a passing walker.
+    final target =
+        kPedLaneOffset + (_threatened ? _avoidSign * kPedSideStep : 0.0);
+    final maxLean = kPedSideStepRate * dt;
+    lateralOffset += (target - lateralOffset).clamp(-maxLean, maxLean);
     if (!hold) advanceByDistance(walkSpeed * dt);
     position.setFrom(splinePosition);
     angle = splineAngle;
