@@ -157,6 +157,24 @@ const double kPedMinSpawnDist = 240.0;
 /// A pedestrian respects a car's bounding box: it holds at the box rather than
 /// walking into it. This is how far ahead (its next step) it probes for a car.
 const double kPedStepProbe = 10.0;
+/// Keep-right lateral offset (world units) every pedestrian rides off its
+/// route's centreline. Two pedestrians meeting head-on on a shared centreline
+/// each keep to their own right, so they slide to OPPOSITE sides (2× this
+/// apart) and pass without overlapping instead of ghosting through each other.
+/// Kept small (< the ~12u footprint, and well inside the ±26u zebra detection
+/// band) so a crossing pedestrian still reads as on its zebra for the rules.
+const double kPedLaneOffset = 8.0;
+/// Centre-to-centre distance under which a pedestrian's next step would land in
+/// another pedestrian's footprint, so it holds. ~2× the ~6u footprint radius:
+/// the two figures would touch. Head-on walkers (now lane-separated above) stay
+/// outside this; a faster walker catching a slower one on the same lane holds.
+///
+/// LOAD-BEARING INVARIANT: `2 * kPedLaneOffset > kPedAvoidDist`. Two head-on
+/// walkers on a shared centreline end up `2 * kPedLaneOffset` apart; that gap
+/// must exceed this threshold or their forward probes trip each other at every
+/// meeting, re-introducing a mutual freeze (broken only by [kPedHoldTimeout])
+/// in place of a clean side-by-side pass. Don't retune one without the other.
+const double kPedAvoidDist = 12.0;
 /// Radius of a pedestrian's personal-space bubble (~2× the ~12u footprint). When
 /// the PLAYER's car body comes within this of a crossing pedestrian, the
 /// pedestrian startles (pops the "!") — even if the car isn't on their exact

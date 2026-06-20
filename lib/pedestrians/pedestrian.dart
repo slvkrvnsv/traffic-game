@@ -22,6 +22,9 @@ class Pedestrian extends PositionComponent with SplineFollower {
     // Splines are authored tile-local; the pedestrian is a world child, so it
     // carries the owning tile's placement (like NPC cars do).
     assignSpline(crossingPath, worldOffset: worldOffset, worldAngle: worldAngle);
+    // Keep to the right of the route centreline: opposite-direction walkers on a
+    // shared centreline slide to opposite sides and pass without overlapping.
+    lateralOffset = kPedLaneOffset;
     position.setFrom(splinePosition);
     angle = splineAngle;
   }
@@ -41,7 +44,19 @@ class Pedestrian extends PositionComponent with SplineFollower {
   // The pedestrian respects it — it holds rather than walking into the box.
   bool _blockedByPlayer = false;
   bool _blockedByNpc = false;
-  double _holdTime = 0.0;
+  // Set each frame by TileManager: another pedestrian's footprint is on the next
+  // step. The pedestrian holds rather than walking into (overlapping) them. Kept
+  // SEPARATE from the car flags so the give-way fault (which keys off
+  // [blockedByPlayer]) is never confused by a ped held merely for another ped.
+  bool _blockedByPed = false;
+  // Independent timeout timers for the two breakable holds (NPC car / other ped).
+  // Each resets only when ITS OWN cause clears, so a long wait for one obstacle
+  // never eats into the stand-off grace owed to the other — a ped that just
+  // waited out an NPC car must still give a freshly-blocking ped its full
+  // kPedHoldTimeout before walking through it (otherwise it ghosts straight
+  // through, defeating the non-overlap hold).
+  double _npcHoldTime = 0.0;
+  double _pedHoldTime = 0.0;
 
   // Set each frame by TileManager: the player's car body is inside this
   // pedestrian's personal-space bubble. Tracked so the startle "!" pops once per
@@ -52,6 +67,10 @@ class Pedestrian extends PositionComponent with SplineFollower {
     _blockedByPlayer = player;
     _blockedByNpc = npc;
   }
+
+  /// Set each frame by TileManager: another pedestrian's footprint is on this
+  /// pedestrian's next step. Tracked apart from the car flags (see [_blockedByPed]).
+  void setBlockedByPed(bool value) => _blockedByPed = value;
 
   /// Whether the player's car is currently inside this pedestrian's personal
   /// space. Carries the previous frame's value for the rising-edge startle cue.
@@ -69,15 +88,18 @@ class Pedestrian extends PositionComponent with SplineFollower {
   @override
   void update(double dt) {
     super.update(dt);
-    if (!_blockedByNpc) _holdTime = 0.0;
-    bool hold;
+    // Tick each breakable hold on its own timer; reset the one whose cause cleared.
+    _npcHoldTime = _blockedByNpc ? _npcHoldTime + dt : 0.0;
+    _pedHoldTime = _blockedByPed ? _pedHoldTime + dt : 0.0;
+    final bool hold;
     if (_blockedByPlayer) {
       hold = true; // never walk through the player (no unfair crash)
-    } else if (_blockedByNpc) {
-      _holdTime += dt;
-      hold = _holdTime < kPedHoldTimeout; // break a rare mutual stand-off
     } else {
-      hold = false;
+      // Hold while any active obstacle is still within its OWN stand-off timeout;
+      // once a cause times out it stops compelling a hold (breaking a rare mutual
+      // stand-off) without one obstacle's wait shortening the other's grace.
+      hold = (_blockedByNpc && _npcHoldTime < kPedHoldTimeout) ||
+          (_blockedByPed && _pedHoldTime < kPedHoldTimeout);
     }
     if (!hold) advanceByDistance(walkSpeed * dt);
     position.setFrom(splinePosition);

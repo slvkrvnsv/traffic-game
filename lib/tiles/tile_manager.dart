@@ -252,6 +252,35 @@ class TileManager extends Component {
       }
     }
     _updatePedestrianCarAvoidance();
+    _updatePedestrianPedAvoidance();
+  }
+
+  /// Pedestrians don't walk through each other. Each ped probes its next step
+  /// against every other ped's footprint (both registries — a road-crosser and a
+  /// sidewalk stroller can meet at a corner) and holds if it would land on one.
+  /// The keep-right lateral offset every ped rides ([kPedLaneOffset]) means
+  /// head-on walkers on a shared centreline are already side-by-side, so their
+  /// forward probes miss and they pass freely; this pass catches the remaining
+  /// case — a faster walker catching a slower one on the same lane (only the
+  /// follower's probe hits, so only it holds; no deadlock) — plus perpendicular
+  /// corner conflicts, which the [kPedHoldTimeout] safety valve breaks.
+  void _updatePedestrianPedAvoidance() {
+    final all = <Pedestrian>[...pedestrians, ...ambientPedestrians];
+    if (all.length < 2) return;
+    const minSq = kPedAvoidDist * kPedAvoidDist;
+    for (final ped in all) {
+      final fwd = Vector2(cos(ped.angle), sin(ped.angle));
+      final probe = ped.position + fwd * kPedStepProbe; // its next step
+      var blocked = false;
+      for (final other in all) {
+        if (identical(other, ped)) continue;
+        if (probe.distanceToSquared(other.position) < minSq) {
+          blocked = true;
+          break;
+        }
+      }
+      ped.setBlockedByPed(blocked);
+    }
   }
 
   /// A road-crossing pedestrian respects a car's bounding box: it holds at the

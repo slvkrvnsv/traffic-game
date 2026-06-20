@@ -115,8 +115,12 @@ class IntersectionTile extends TileBase {
       _crosswalkShift +
       (locale == LocaleType.urban ? _urbanStopLineExtra : 0.0);
 
-  /// Tile-local Y of the player's stop line on the south approach. The yield
-  /// rule is evaluated at this line, so the painted marking == the rule.
+  /// Tile-local Y of the player's stop line on the south approach. Both the
+  /// mandatory STOP and the fail-to-yield decision are judged here (the painted
+  /// marking == the rule). In urban this line sits ~102u back from the conflict
+  /// box, so a conflicting car already CROSSING the box is exempted from the
+  /// yield check (see [_playerYieldTargets]) — it clears before a player at the
+  /// line reaches the junction; only an approaching priority car counts.
   double get _playerStopLineY => _cy + _halfBox + _stopLineGap;
 
   /// How close to the stop line (along the approach) a complete stop must be
@@ -979,14 +983,25 @@ class IntersectionTile extends TileBase {
       // right into the same exit) don't trigger a fail-to-yield on a left turn;
       // only actually colliding does. Cross-traffic still counts.
       if (maneuver == Maneuver.left && o.heading == Heading.south) continue;
-      // A conflicting car that's already mostly through the box (past its
-      // centre) or gone is on its way out — pulling out behind it as it clears
-      // is normal, not a fail-to-yield. (Uses the lenient past-centre test, not
-      // the strict straight-only `_isClearing` used for NPC blocking, so a
-      // turner that's nearly out also stops counting against the player.)
+      // A conflicting car past the box centre, or gone, is on its way out —
+      // pulling out behind it as it clears is normal, not a fail-to-yield (the
+      // lenient past-centre test, not the strict straight-only `_isClearing`, so
+      // a turner that's nearly out also stops counting). URBAN ONLY, also exempt
+      // a car that's merely still MOVING through the box: there the stop line is
+      // pushed ~102u back (see [_stopLineGap]), so a crossing car clears before a
+      // player at the line can reach the junction. On INTERURBAN the line sits
+      // ~44u back with no push-back, so a moving but not-yet-past-centre car can
+      // still be in the player's path on arrival — keep the strict test there,
+      // else a real T-bone goes unflagged. (Residual: a car crawling just above
+      // kStopSpeedThreshold in urban may not actually clear; the deeper fix is to
+      // reason about time-to-conflict rather than sample at a line far from the
+      // box. What's left counting: an APPROACHING priority car — the real
+      // queue-jump — or a car stopped/blocking IN the box.)
       final oz = zone[o.id];
-      if (oz == _Zone.past ||
-          (oz == _Zone.inBox && _pastBoxCentre(o.heading, o.localPos))) {
+      final clearingInBox = oz == _Zone.inBox &&
+          ((locale == LocaleType.urban && o.speed > kStopSpeedThreshold) ||
+              _pastBoxCentre(o.heading, o.localPos));
+      if (oz == _Zone.past || clearingInBox) {
         continue;
       }
       final ot = _ticket[o.id];
@@ -1321,12 +1336,17 @@ class IntersectionTile extends TileBase {
     }
 
     // The painted line is the decision point — evaluated once as the player
-    // crosses it. Two independent faults can be raised here:
+    // crosses it, where the player COMMITS. (Sampling later, at the box edge,
+    // doesn't work: in urban the line sits ~102u back, and by the time the player
+    // covers that the dynamic arbitration has cleared every conflict — the fault
+    // would never fire.) Two independent faults can be raised here:
     //   - stop-sign: no complete stop was made (mandatory regardless of
     //     traffic — the whole all-way-stop lesson);
     //   - fail-to-yield: the player crossed while a conflicting car had the
-    //     right of way (in the box, or it stopped first), so it should have
-    //     waited its turn. Only meaningful when there *is* traffic to yield to.
+    //     right of way. A car ALREADY CROSSING the box is exempted upstream (see
+    //     [_playerYieldTargets]) — it's on its way out and a player still at the
+    //     line will reach the junction after it clears — so this fires only for
+    //     an APPROACHING priority car (the genuine queue-jump).
     if (!_stopLineCrossed && localY <= _playerStopLineY) {
       _stopLineCrossed = true;
       scenario.onPlayerPassedYieldLine(playerCar.speed);
@@ -1551,16 +1571,12 @@ class IntersectionTile extends TileBase {
   static const double _signRadius = 30.0;
 
   /// How far *before* the stop line (toward the approaching driver) the sign
-  /// stands, measured along the approach. Pulls it clear of the rounded curb
-  /// corner so it reads as standing beside the lane, not stuck in the junction.
-  static const double _signSetback = 130.0;
+  /// sits, measured along the approach.
+  static const double _signSetback = 60.0;
 
-  /// One STOP sign per approach. Each stands on the right-hand sidewalk of its
-  /// entering lane (drive-on-the-right), a little before that approach's stop
-  /// line, and is rotated to face the driver coming in — the signal that this
-  /// junction demands a full stop.
+  /// One STOP sign per approach, on the road surface in the right-hand lane,
+  /// a little before the stop line.
   void _drawStopSigns(Canvas canvas) {
-    // Travel direction (tile-local) of each approach's entering traffic.
     _drawStopSignFor(canvas, const Offset(0, -1)); // S approach → N-bound
     _drawStopSignFor(canvas, const Offset(0, 1)); //  N approach → S-bound
     _drawStopSignFor(canvas, const Offset(1, 0)); //  W approach → E-bound
@@ -1568,16 +1584,12 @@ class IntersectionTile extends TileBase {
   }
 
   /// Places and orients one sign for traffic travelling along [travel].
+  /// Centred in the right-hand (approaching) lane on the road surface.
   void _drawStopSignFor(Canvas canvas, Offset travel) {
-    // Push fully past the sidewalk onto the grass corner so the octagon never
-    // overlaps the road or pavement (sign inner edge sits at the grass edge).
-    const outward = kRoadWidth / 2 + kPavementWidth + _signRadius;
-    final back = _halfBox + _stopLineGap + _signSetback; // before the stop line
-    // Driver's right, with traffic on the right-hand side of the road.
     final right = Offset(-travel.dy, travel.dx);
+    const outward = _laneOffset; // centre of the right-hand lane
+    final back = _halfBox + _stopLineGap + _signSetback;
     final center = const Offset(_cx, _cy) - travel * back + right * outward;
-    // Rotate so the octagon's "up" aligns with travel → STOP reads upright to
-    // the approaching driver.
     final angle = math.atan2(travel.dx, -travel.dy);
     _drawStopSign(canvas, center, angle);
   }
@@ -1608,8 +1620,7 @@ class IntersectionTile extends TileBase {
     canvas.restore();
   }
 
-  /// The constant "STOP" label — laid out once and reused across every sign and
-  /// frame (the text/style never change), instead of rebuilding 4×/frame.
+  /// Laid out once and reused — text/style never change.
   static final TextPainter _stopText = TextPainter(
     text: const TextSpan(
       text: 'STOP',
