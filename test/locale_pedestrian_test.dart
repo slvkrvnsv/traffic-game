@@ -61,10 +61,12 @@ void main() {
   });
 
   group('Locale dressing hooks', () {
-    test('ground colour differs between locales', () {
+    test('ground colour is the same grass green across locales', () {
+      // Ground is uniform grass green now (the urban khaki was dropped); the
+      // locale still drives crossings/decoration, just not the ground fill.
       final urban = StraightTile(locale: LocaleType.urban);
       final rural = StraightTile(locale: LocaleType.interurban);
-      expect(urban.groundColor, isNot(rural.groundColor));
+      expect(urban.groundColor, rural.groundColor);
     });
 
     test('straights expose sidewalks (ambient walkers) and decoration zones', () {

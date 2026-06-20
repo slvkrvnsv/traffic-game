@@ -622,7 +622,16 @@ class IntersectionTile extends TileBase {
         npc.brain.intersectionRuleActive = false;
         npc.brain.hasRightOfWay = true;
         npc.brain.stopTargetDistance = pedStop;
-        npc.brain.speedCap = z == _Zone.inBox ? kNpcTurnSpeed : null;
+        // Hold crossing speed while a zebra is still on the path ahead — not just
+        // while `inBox`. A TURNING car reads `far` the moment it clears the box
+        // (its approach-axis coordinate is past it), but its EXIT crosswalk sits
+        // further out; without this the speed cap drops there and the car
+        // accelerates across the crossing, sweeping close in front of a
+        // pedestrian. A cap (not a stop) still clears the stripes — no freeze.
+        final overCrossing =
+            _crossingAhead(npc.spline!, npc.distanceTravelled, kCarLength * 2);
+        npc.brain.speedCap =
+            (z == _Zone.inBox || overCrossing) ? kNpcTurnSpeed : null;
         continue;
       }
 
@@ -1053,35 +1062,54 @@ class IntersectionTile extends TileBase {
   /// THE pedestrian hazard probe — the one mechanism for "is a crossing
   /// pedestrian in my way, and how far ahead?". Walks [sp] forward from
   /// [travelled] and returns the distance to the NEAR EDGE of the first zebra
-  /// crossing ahead that has a pedestrian within [kPedYieldLateral] of this lane
-  /// — i.e. a fixed hold line before the busy crossing — or null if clear. It
-  /// holds at the crossing's edge, NOT at the pedestrian's body: targeting the
-  /// body let a car nuzzle up to whoever was nearest and creep forward almost
-  /// into the next pedestrian as a queue shuffled across.
+  /// crossing ahead that has a CONFLICTING pedestrian — i.e. a fixed hold line
+  /// before the busy crossing — or null if clear. It holds at the crossing's
+  /// edge, NOT at the pedestrian's body: targeting the body let a car nuzzle up
+  /// to whoever was nearest and creep forward almost into the next pedestrian as
+  /// a queue shuffled across.
   ///
-  /// One mechanism, one knob ([kPedYieldLateral], the lane half-width), used
-  /// identically by NPC cars and the player. Because it walks the *actual path*
-  /// it follows turns for free (a left-turn's exit crossing is just further along
-  /// the spline), and because it is re-run every frame it re-holds for a
-  /// pedestrian who steps on after the agent has rolled forward. It SKIPS the
-  /// crossing the reference point is currently inside — commit & clear, so a car
-  /// never freezes straddling the stripes — which is what lets one always-on
-  /// probe replace the old behind-the-line / in-the-box staging. Direction
-  /// attribution is unnecessary: the path only meets a zebra where that zebra
-  /// spans this lane's road, so a sidewalk stroller or a corner-walker is
-  /// laterally too far from every path point to register.
+  /// A pedestrian on the crossing the path is on conflicts when EITHER they are
+  /// already within [kPedYieldLateral] of the path (in this lane — also catches a
+  /// stationary or dead-centre walker) OR they are walking TOWARD the path point
+  /// ("moving the car's way"), so a car yields to someone crossing in from the
+  /// far half, not only one already in its lane. This is the same standard the
+  /// player's give-way fault ([_playerCuttingOffPed]) holds the player to — NPC
+  /// cars yield exactly when the player would be faulted for not. (The
+  /// walking-toward term is currently unbounded in distance, so an NPC yields the
+  /// instant a ped steps onto the far end heading its way; bound it by distance
+  /// if that reads as freezing too early.)
+  ///
+  /// Used identically by NPC cars and the player wait flag. Because it walks the
+  /// *actual path* it follows turns for free (a left-turn's exit crossing is just
+  /// further along the spline), and because it is re-run every frame it re-holds
+  /// for a pedestrian who steps on after the agent has rolled forward. It SKIPS
+  /// the crossing the reference point is currently inside — commit & clear, so a
+  /// car never freezes straddling the stripes. The per-pedestrian band index
+  /// scopes the conflict tests to the crossing the path is on, so a stroller on a
+  /// crossing road can't false-trip a car on the parallel lane.
   double? _pedStopOnPath(
       Spline sp, double travelled, List<Pedestrian> pedestrians) {
     if (pedestrians.isEmpty) return null;
     final total = sp.totalLength;
     if (total <= 0) return null;
 
-    // Pedestrians physically on a zebra band (positional — the lateral path test
-    // below does the lane-scoping), in tile-local coords.
-    final zebraPeds = <Vector2>[
-      for (final ped in pedestrians)
-        if (_pedOnZebra(worldToLocal(ped.position))) worldToLocal(ped.position),
-    ];
+    // Pedestrians physically on a zebra band, in tile-local coords, each tagged
+    // with its band index and its walking direction (rotated into tile space).
+    // The band index scopes the conflict tests below to the crossing the car's
+    // path is actually on; the direction lets the car yield to someone walking
+    // INTO its path from across the road, not only one already in its lane.
+    final zebraPeds = <({Vector2 pos, Vector2 fwd, int band})>[];
+    for (final ped in pedestrians) {
+      final local = worldToLocal(ped.position);
+      final band = _zebraIndexOf(local);
+      if (band < 0) continue;
+      zebraPeds.add((
+        pos: local,
+        fwd: directionToLocal(
+            Vector2(math.cos(ped.angle), math.sin(ped.angle))),
+        band: band,
+      ));
+    }
     if (zebraPeds.isEmpty) return null; // (only urban junctions reach here)
 
     // Dropping zebra direction-attribution is safe ONLY while a parallel lane
@@ -1111,23 +1139,50 @@ class IntersectionTile extends TileBase {
         d <= kPedYieldScanDistance && travelled + d <= total;
         d += step) {
       final pt = sp.evaluate(((travelled + d) / total).clamp(0.0, 1.0));
-      final onZebra = _pedOnZebra(pt);
+      final ptBand = _zebraIndexOf(pt);
       if (committing) {
-        if (!onZebra) committing = false; // left the crossing we were clearing
+        if (ptBand < 0) committing = false; // left the crossing we were clearing
         continue;
       }
-      if (!onZebra) {
+      if (ptBand < 0) {
         bandEntry = null; // off the crossing — reset for the next one ahead
         continue;
       }
       bandEntry ??= d; // first point of this crossing = its near-edge hold line
-      for (final pl in zebraPeds) {
-        // Anyone on this crossing within the lane → hold at its near edge, not
-        // at the person, so the car never creeps up to a queueing pedestrian.
-        if (pl.distanceTo(pt) <= conflict) return bandEntry;
+      for (final p in zebraPeds) {
+        if (p.band != ptBand) continue; // only peds on THIS crossing
+        // Yield (hold at the near edge, not at the person, so the car never
+        // creeps onto a queueing pedestrian) if the pedestrian is either already
+        // in this lane — distance within [conflict], which also covers a
+        // stationary or dead-centre walker — OR walking TOWARD this path point
+        // ("moving the car's way") from anywhere on the crossing, the same
+        // standard the player's give-way fault holds the player to. The far-half
+        // crosser the old lane-only corridor missed (car started right in front
+        // of them) now stops the car.
+        if (p.pos.distanceTo(pt) <= conflict ||
+            (pt - p.pos).dot(p.fwd) > 0) {
+          return bandEntry;
+        }
       }
     }
     return null;
+  }
+
+  /// Whether a zebra crossing lies on [sp] within [lookahead] ahead of
+  /// [travelled] (pedestrians aside). Used to KEEP a car at crossing speed while
+  /// it is on or approaching a crosswalk on its path — chiefly the exit crosswalk
+  /// of a turn, where [_zoneOf] reports `far` (so the in-box speed cap has
+  /// dropped) yet the car is still sweeping over the stripes. Position-only, like
+  /// [_pedOnZebra]; cheap (coarse 10u steps over a short span).
+  bool _crossingAhead(Spline sp, double travelled, double lookahead) {
+    final total = sp.totalLength;
+    if (total <= 0) return false;
+    for (double d = 0; d <= lookahead && travelled + d <= total; d += 10.0) {
+      if (_pedOnZebra(sp.evaluate(((travelled + d) / total).clamp(0.0, 1.0)))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /// The nearer of two optional stop-target distances (smaller wins; null = no

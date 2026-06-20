@@ -200,9 +200,7 @@ abstract class TileBase extends PositionComponent {
   // ---------------------------------------------------------------------------
 
   /// Ground fill, by locale: countryside grass vs a paler urban ground.
-  Color get groundColor => locale == LocaleType.urban
-      ? const Color(0xFF7C8A6E) // muted urban green/khaki
-      : const Color(0xFF4CAF50); // grass green
+  Color get groundColor => const Color(0xFF4CAF50); // grass green
 
   /// Tile-local rectangles of off-road grass scattered with trees (interurban).
   /// Must lie clear of the road, pavement and every spline. Default: none.

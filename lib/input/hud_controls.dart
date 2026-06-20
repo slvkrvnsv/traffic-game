@@ -88,12 +88,15 @@ class _HudControlsState extends State<HudControls> {
           bottom: 36,
           child: Row(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               _PedalButton(
-                icon: Icons.report_rounded,
+                icon: Icons.drag_handle_rounded,
                 color: const Color(0xFFEF4444),
                 pressed: _brakeDown,
                 onChanged: _setBrake,
+                width: 140.0,
+                height: 88.0,
               ),
               const SizedBox(width: 18),
               _PedalButton(
@@ -101,6 +104,8 @@ class _HudControlsState extends State<HudControls> {
                 color: const Color(0xFF22C55E),
                 pressed: _gasDown,
                 onChanged: _setGas,
+                width: 88.0,
+                height: 140.0,
               ),
             ],
           ),
@@ -110,35 +115,46 @@ class _HudControlsState extends State<HudControls> {
   }
 }
 
-/// A round hold-to-act pedal. Reports press/release via [onChanged].
+/// A hold-to-act pedal button. Pass explicit [width]/[height] for rectangular
+/// shapes; omit both for the default circle.
 class _PedalButton extends StatelessWidget {
   const _PedalButton({
     required this.icon,
     required this.color,
     required this.pressed,
     required this.onChanged,
+    this.width,
+    this.height,
   });
 
   final IconData icon;
   final Color color;
   final bool pressed;
   final ValueChanged<bool> onChanged;
+  final double? width;
+  final double? height;
 
   static const double _size = 84.0;
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    final double w = width ?? _size;
+    final double h = height ?? _size;
+    final BorderRadiusGeometry borderRadius = (width != null || height != null)
+        ? BorderRadius.circular(20)
+        : BorderRadius.circular(_size / 2);
+
+    return Listener(
       behavior: HitTestBehavior.opaque,
-      onTapDown: (_) => onChanged(true),
-      onTapUp: (_) => onChanged(false),
-      onTapCancel: () => onChanged(false),
+      onPointerDown: (_) => onChanged(true),
+      onPointerUp: (_) => onChanged(false),
+      onPointerCancel: (_) => onChanged(false),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 80),
-        width: _size,
-        height: _size,
+        width: w,
+        height: h,
         decoration: BoxDecoration(
-          shape: BoxShape.circle,
+          borderRadius: borderRadius,
           color: pressed ? color : color.withValues(alpha: 0.55),
           border: Border.all(color: Colors.white.withValues(alpha: 0.85), width: 3),
           boxShadow: [
@@ -154,3 +170,4 @@ class _PedalButton extends StatelessWidget {
     );
   }
 }
+
