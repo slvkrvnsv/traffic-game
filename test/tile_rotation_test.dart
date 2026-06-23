@@ -92,7 +92,7 @@ void main() {
         );
 
       expectVector(b.worldEntry, a.worldExit);
-      expect(TileConnector.overlapsAny(placement, [a]), isFalse);
+      expect(TileConnector.overlapsAny(placement, b.size, [a]), isFalse);
     });
 
     test('footprint guard rejects a tile placed on top of another', () {
@@ -100,7 +100,7 @@ void main() {
         ..place(worldPosition: Vector2.zero(), orientation: 0.0);
       final placement =
           TilePlacement(worldPosition: Vector2.zero(), orientation: 0.0);
-      expect(TileConnector.overlapsAny(placement, [a]), isTrue);
+      expect(TileConnector.overlapsAny(placement, a.size, [a]), isTrue);
     });
   });
 

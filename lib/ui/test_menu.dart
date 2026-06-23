@@ -55,6 +55,11 @@ class _TestMenuScreenState extends State<TestMenuScreen> {
                 TileType.intersection4way,
                 control: IntersectionControl.trafficLight),
           ],
+        // 2-lane traffic-light intersection (lane discipline + signals).
+        TileType.intersectionLight => [
+            _tile('Intersection — 2-Lane Light', Icons.fork_right_rounded,
+                TileType.intersectionLight),
+          ],
         // Every other type is only meaningful chained: straight1Lane / laneMerge
         // / laneExtend live in the Connectors course, and the plain straight
         // seams onto nothing useful on its own. Kept off the menu deliberately —

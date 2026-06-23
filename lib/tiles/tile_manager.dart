@@ -206,6 +206,14 @@ class TileManager extends Component {
   /// On bootstrap there is no meaningful position yet, so use the first
   /// (default/seam) lane.
   void _assignPlayerToTile(TileBase tile, {bool matchLane = false}) {
+    // Let a tile late-bind its commanded maneuver from the lane the player is
+    // entering (the 2-lane light always sets a lane-change task) BEFORE its
+    // playerPaths are read below. On a hand-off the player's lane centre is
+    // meaningful; on bootstrap there's no position yet, so use the entry anchor
+    // (the inner/seam lane), which the tile reads as "entered the inner lane".
+    tile.bindPlayerEntry(
+        matchLane ? playerCar.splineCentrePosition : tile.worldEntry);
+
     Spline lane = tile.playerPaths.first;
     if (matchLane && tile.playerPaths.length > 1) {
       final from = playerCar.splineCentrePosition;
@@ -468,12 +476,19 @@ class TileManager extends Component {
     oldTile.onDeactivate();
 
     final newTile = _activeTiles.first;
-    _activateTile(newTile);
 
     // NPC continuity across the seam is handled continuously every frame by
     // _advanceNpcsAcrossSeams(), independent of the player's hand-off.
 
+    // Assign BEFORE activating so a tile that late-binds its maneuver from the
+    // entry lane (the 2-lane light) has it set before [_activateTile] announces
+    // it. Mirrors the bootstrap order in [_spawnInitialTile] (assign → activate).
     _assignPlayerToTile(newTile, matchLane: true);
+    // Binding may have just changed the new tile's EXIT direction (a late-bound
+    // turn). Any downstream tiles already streamed in were placed against its old
+    // (default) exit — re-place them so the corridor stays seamless.
+    _rePlaceAfter(newTile);
+    _activateTile(newTile);
 
     debugPrint('[TILE] handoff: ${oldTile.tileType.name} → ${newTile.tileType.name}'
         '  NPCs total=${_spawner.allNpcs.length}');
@@ -483,6 +498,42 @@ class TileManager extends Component {
 
     // Keep old tile in the world until it's far behind the camera.
     _trailingTiles.add(oldTile);
+  }
+
+  /// Re-place every tile downstream of [boundTile] against its (now-correct)
+  /// predecessor, after [boundTile] late-bound its exit direction. Most tiles
+  /// know their exit at spawn, so the recomputed placement is identical and they
+  /// are skipped (no churn) — only a late-binding tile (the 2-lane light, whose
+  /// turn isn't known until the player enters it) ever moves a downstream tile.
+  /// A moved tile's NPCs are re-anchored to the new placement and its pedestrian
+  /// spawners rebuilt (the spawner captures the offset at construction); the tile
+  /// is a full tile ahead and off-screen, so the reshuffle is invisible.
+  void _rePlaceAfter(TileBase boundTile) {
+    final idx = _activeTiles.indexOf(boundTile);
+    if (idx < 0) return;
+    for (int i = idx + 1; i < _activeTiles.length; i++) {
+      final prev = _activeTiles[i - 1];
+      final tile = _activeTiles[i];
+      final placement = TileConnector.computeNextPlacement(prev, tile);
+      final moved =
+          (tile.position - placement.worldPosition).length2 > 0.25 ||
+              (tile.orientation - placement.orientation).abs() > 1e-6;
+      if (!moved) continue;
+      tile.place(
+          worldPosition: placement.worldPosition,
+          orientation: placement.orientation);
+      for (final npc in tile.npcs) {
+        final s = npc.spline;
+        if (s != null) {
+          npc.assignSpline(s,
+              startDistance: npc.distanceTravelled,
+              worldOffset: tile.position,
+              worldAngle: tile.orientation);
+        }
+      }
+      _disposePedSpawners(tile);
+      _createPedSpawnersForTile(tile);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -626,7 +677,7 @@ class TileManager extends Component {
       final liveTiles = [..._activeTiles, ..._trailingTiles];
       for (int attempt = 0;
           attempt < _placementRetries &&
-              TileConnector.overlapsAny(placement, liveTiles);
+              TileConnector.overlapsAny(placement, tile.size, liveTiles);
           attempt++) {
         tile = _createTile(_pickNextTileType(prevTile), locale);
         placement = TileConnector.computeNextPlacement(prevTile, tile);
@@ -798,7 +849,12 @@ class TileManager extends Component {
   /// Remove old tiles once the camera has clearly moved past them.
   void _cullTrailingTiles() {
     _trailingTiles.removeWhere((tile) {
-      if (playerCar.position.distanceTo(tile.worldCenter) > kTileSize * 1.2) {
+      // Size-aware so a longer-than-square tile isn't culled while its far end
+      // is still on screen: add however much the tile's largest dimension
+      // exceeds a standard square tile. Square tiles keep the original distance.
+      final cullDist = kTileSize * 1.2 +
+          max(0.0, max(tile.size.x, tile.size.y) - kTileSize);
+      if (playerCar.position.distanceTo(tile.worldCenter) > cullDist) {
         _disposePedSpawners(tile);
         tile.removeFromParent();
         debugPrint('[TILE] removed trailing: ${tile.tileType.name}');

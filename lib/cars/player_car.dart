@@ -50,6 +50,12 @@ class PlayerCar extends CarBase {
   /// tile once merged / out of the lane.
   bool forceLeftIndicator = false;
 
+  /// Mirror of [forceLeftIndicator] for a forced RIGHT indicator — set by a
+  /// multi-lane intersection while the player must move to (or hold) the right
+  /// lane for the commanded maneuver, before the lane visibly bends. Cleared by
+  /// the tile once the lane change is no longer the active task.
+  bool forceRightIndicator = false;
+
   /// Record the parallel travel lanes available on the player's current tile,
   /// plus that tile's world placement, so a swipe can switch between them.
   /// [allowLaneChange] is the tile's own verdict (single-lane maneuver tiles
@@ -369,10 +375,16 @@ class PlayerCar extends CarBase {
       return;
     }
     // A commanded merge signals left from the moment the task appears (while in
-    // the ending lane), before the lane has visibly bent.
+    // the ending lane), before the lane has visibly bent. A multi-lane
+    // intersection forces the indicator toward the lane the player must take.
     if (forceLeftIndicator) {
       setLeftIndicator(true);
       setRightIndicator(false);
+      return;
+    }
+    if (forceRightIndicator) {
+      setLeftIndicator(false);
+      setRightIndicator(true);
       return;
     }
     final tAhead =

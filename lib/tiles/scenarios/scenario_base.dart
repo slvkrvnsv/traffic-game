@@ -31,6 +31,11 @@ abstract class ScenarioBase {
   void onStopSignViolation(double minSpeed) {}
   void onRedLightViolation() {}
   void onBlockedIntersection() {}
+
+  /// Player was in the wrong lane for the commanded maneuver at a multi-lane
+  /// intersection (e.g. turned left from a through-only lane). A logged fault.
+  void onWrongLane() {}
+
   void onPlayerPassedYieldLine(double speed) {}
 
   /// Called when an NPC reacted to the player forcing it into a hard brake

@@ -6,6 +6,7 @@ import 'package:traffic_game/tiles/definitions/straight_tile.dart';
 import 'package:traffic_game/tiles/definitions/straight_one_lane_tile.dart';
 import 'package:traffic_game/tiles/definitions/lane_transition_tile.dart';
 import 'package:traffic_game/tiles/definitions/intersection_tile.dart';
+import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
 import 'package:traffic_game/tiles/definitions/start_tile.dart';
 
 /// The free-drive chainer must keep the road lane-continuous: a lane is only
@@ -17,6 +18,7 @@ void main() {
     StraightOneLaneTile.register();
     LaneTransitionTile.register();
     IntersectionTile.register();
+    IntersectionLightTile.register();
     StartTile.register();
   });
 
@@ -57,9 +59,9 @@ void main() {
   });
 
   test('the matched adjacencies are exactly the intended ones', () {
-    // 2-lane exit → another 2-lane road or a 2→1 merge.
+    // 2-lane exit → another 2-lane road, a 2→1 merge, or the 2-lane light.
     expect(TileRegistry.spawnableWithEntryLanes(2).toSet(),
-        {TileType.straight, TileType.laneMerge});
+        {TileType.straight, TileType.laneMerge, TileType.intersectionLight});
     // 1-lane exit → a 1-lane road, the intersection, or a 1→2 extend.
     expect(TileRegistry.spawnableWithEntryLanes(1).toSet(),
         {TileType.straight1Lane, TileType.intersection4way, TileType.laneExtend});

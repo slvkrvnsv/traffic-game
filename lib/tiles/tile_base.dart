@@ -35,7 +35,8 @@ abstract class TileBase extends PositionComponent {
     required this.scenario,
     this.locale = LocaleType.interurban,
     super.position,
-  }) : super(size: Vector2.all(kTileSize));
+    Vector2? size,
+  }) : super(size: size ?? Vector2.all(kTileSize));
 
   final TileType tileType;
   final ScenarioBase scenario;
@@ -115,6 +116,12 @@ abstract class TileBase extends PositionComponent {
   /// (e.g. "Merge left"). Null → the HUD uses [commandedManeuver]'s label.
   String? get taskLabel => null;
 
+  /// Called once when the player is assigned to this tile, BEFORE [playerPaths]
+  /// is read, with the player's current lane-centre world position. A tile that
+  /// late-binds its commanded maneuver from the entry lane (the 2-lane light
+  /// always sets a task requiring a lane change) overrides this. Default: no-op.
+  void bindPlayerEntry(Vector2 playerCentreWorld) {}
+
   double get handOffTriggerT => kHandOffTriggerT;
 
   final List<NpcCar> npcs = [];
@@ -171,7 +178,7 @@ abstract class TileBase extends PositionComponent {
   Vector2 get worldEntry => localToWorld(entryAnchor);
   Vector2 get worldExit => localToWorld(exitAnchor);
   Vector2 get worldExitDirection => directionToWorld(exitDirection);
-  Vector2 get worldCenter => localToWorld(Vector2.all(kTileSize / 2));
+  Vector2 get worldCenter => localToWorld(size / 2);
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -185,6 +192,14 @@ abstract class TileBase extends PositionComponent {
   /// Used by the road-blocking check to exempt rational standstills.
   /// Default: a plain road never requires the player to wait.
   bool get playerMustWait => false;
+
+  /// Whether the generic player-cut-off detector (the NPC "!" reaction) should
+  /// be suppressed right now. A tile that grades right-of-way itself only gets
+  /// false positives from it — most visibly a freshly-spawned car barrelling up
+  /// behind the player while it waits its turn. The all-way stop suppresses it
+  /// outright; the multi-lane light suppresses it only near/in the box (so a
+  /// genuine lane-change cut-off on the open approach still reads). Default: off.
+  bool get suppressDriverReactions => false;
 
   /// Whether a crossing pedestrian at world [worldPos] heading [worldDir] must
   /// hold at the curb for a traffic signal — i.e. the crossing it is about to

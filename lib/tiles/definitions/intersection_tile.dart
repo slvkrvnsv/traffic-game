@@ -1493,6 +1493,13 @@ class IntersectionTile extends TileBase {
   @override
   bool get playerMustWait => _playerMustWait;
 
+  /// The intersection grades right-of-way itself; the generic cut-off detector
+  /// only adds false positives here (a fresh car queueing behind the waiting
+  /// player), so it's suppressed for the whole tile. (No player lane changes
+  /// happen on a single-lane intersection, so nothing legitimate is lost.)
+  @override
+  bool get suppressDriverReactions => true;
+
   // ---------------------------------------------------------------------------
   // Crossing-pedestrian detection — only pedestrians actually ON (or stepping
   // onto) a zebra count, never ones strolling a sidewalk parallel to traffic.

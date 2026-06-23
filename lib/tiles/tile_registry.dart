@@ -18,6 +18,11 @@ enum TileType {
   // complete stop at the line, even when the box is clear (a rolling stop is a
   // fault). See [IntersectionTile].
   intersection4way,
+  // 2-lane-each-way traffic-light intersection. Teaches lane discipline (get in
+  // the legal lane for the commanded turn) on top of signal compliance. Built on
+  // the 2-lane road's geometry, so it chains after a 2-lane road. See
+  // [IntersectionLightTile].
+  intersectionLight,
   // The opening parking-lot tile. Placed only as the first tile (never
   // registered for random spawning), so it is absent from [allTypes].
   start,

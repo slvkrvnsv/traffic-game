@@ -38,6 +38,11 @@ class StopSignViolationEvent extends GameEvent {
 /// Player crossed a red light.
 class RedLightViolationEvent extends GameEvent {}
 
+/// Player entered the conflict box in the wrong lane for the commanded maneuver
+/// (a multi-lane intersection: e.g. turning left from a through/right lane, or
+/// going straight from a left-turn-only lane). Non-fatal — a logged exam fault.
+class WrongLaneEvent extends GameEvent {}
+
 /// Player sat still on a clear road with no reason to wait — blocking traffic.
 class RoadBlockingEvent extends GameEvent {
   RoadBlockingEvent({required this.duration});

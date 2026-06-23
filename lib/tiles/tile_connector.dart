@@ -48,14 +48,17 @@ class TileConnector {
     );
   }
 
-  /// True if a square tile at [placement] would overlap any tile in [others].
+  /// True if a tile of [size] at [placement] would overlap any tile in [others].
   /// Used to reject maneuvers that would fold the corridor back onto itself.
   /// AABBs are shrunk slightly so tiles sharing an edge don't count as overlap.
-  static bool overlapsAny(TilePlacement placement, Iterable<TileBase> others) {
+  /// Each tile carries its own size (tiles may be non-square), so the footprint
+  /// is computed per-tile rather than assuming [kTileSize].
+  static bool overlapsAny(
+      TilePlacement placement, Vector2 size, Iterable<TileBase> others) {
     const inset = 2.0;
-    final a = _footprint(placement.worldPosition, placement.orientation);
+    final a = _footprint(placement.worldPosition, placement.orientation, size);
     for (final tile in others) {
-      final b = _footprint(tile.position, tile.orientation);
+      final b = _footprint(tile.position, tile.orientation, tile.size);
       final overlaps = a.left + inset < b.right - inset &&
           b.left + inset < a.right - inset &&
           a.top + inset < b.bottom - inset &&
@@ -65,19 +68,20 @@ class TileConnector {
     return false;
   }
 
-  /// World-space AABB of a square tile rotated by [orientation] about its
+  /// World-space AABB of a [size] tile rotated by [orientation] about its
   /// top-left origin at [pos].
   static ({double left, double top, double right, double bottom}) _footprint(
     Vector2 pos,
     double orientation,
+    Vector2 size,
   ) {
     final cosO = math.cos(orientation);
     final sinO = math.sin(orientation);
     double minX = pos.x, maxX = pos.x, minY = pos.y, maxY = pos.y;
-    for (final corner in const [
-      (kTileSize, 0.0),
-      (0.0, kTileSize),
-      (kTileSize, kTileSize),
+    for (final corner in [
+      (size.x, 0.0),
+      (0.0, size.y),
+      (size.x, size.y),
     ]) {
       final x = pos.x + corner.$1 * cosO - corner.$2 * sinO;
       final y = pos.y + corner.$1 * sinO + corner.$2 * cosO;

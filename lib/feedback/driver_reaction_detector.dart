@@ -5,7 +5,6 @@ import '../core/game_bus.dart';
 import '../cars/npc_car.dart';
 import '../cars/player_car.dart';
 import '../tiles/tile_manager.dart';
-import '../tiles/tile_registry.dart';
 import 'driver_reaction.dart';
 import 'reaction_bubble.dart';
 
@@ -48,8 +47,9 @@ class DriverReactionDetector extends Component {
     // intersection tile itself; the generic cut-off detector only adds false
     // positives there — most visibly a car that streams in and barrels up
     // behind the player while it waits its turn (a fresh NPC defeats the
-    // per-NPC freshness gate). So it's suppressed on the intersection tile.
-    if (tileManager.activeTile?.tileType == TileType.intersection4way) {
+    // per-NPC freshness gate). The tile decides when to suppress it (the
+    // all-way stop always; the multi-lane light only near/in the box).
+    if (tileManager.activeTile?.suppressDriverReactions ?? false) {
       return;
     }
     for (final npc in tileManager.allNpcs) {
