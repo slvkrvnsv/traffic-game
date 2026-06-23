@@ -2,6 +2,7 @@ import 'dart:math';
 import 'scenario_base.dart';
 import 'free_drive_scenario.dart';
 import 'stop_sign_scenario.dart';
+import 'traffic_light_scenario.dart';
 import 'merge_scenario.dart';
 import '../tile_registry.dart';
 
@@ -16,9 +17,12 @@ class ScenarioRegistry {
     TileType.straight: [
       () => FreeDriveScenario(),
     ],
+    // Same geometry, two controls: an all-way STOP or a traffic light. The tile
+    // reads which from the scenario it's handed (IntersectionTile.control) and
+    // switches its arbitration, fault check and signage accordingly.
     TileType.intersection4way: [
       () => StopSignScenario(),
-      // Future: () => TrafficLightScenario(),
+      () => TrafficLightScenario(),
     ],
     // 2→1 merge: graded only when the player is in the ending (right) lane —
     // see MergeScenario. The extend tile (1→2) has nothing to grade.

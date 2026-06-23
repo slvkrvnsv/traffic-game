@@ -20,7 +20,8 @@ class GameWorld extends World {
       {this.testMode,
       this.testManeuver,
       this.testSequence,
-      this.testLocale});
+      this.testLocale,
+      this.testControl});
 
   final TileType? testMode;
   final Maneuver? testManeuver;
@@ -29,6 +30,9 @@ class GameWorld extends World {
   /// If set, pin every tile to this locale (test mode). Null → free-drive rolls
   /// it in stretches (see TileManager).
   final LocaleType? testLocale;
+
+  /// If set, pin every intersection's control (test mode): stop or light.
+  final IntersectionControl? testControl;
 
   late final PlayerCar playerCar;
   late final TileManager tileManager;
@@ -64,6 +68,7 @@ class GameWorld extends World {
       testManeuver: testManeuver,
       testSequence: testSequence,
       testLocale: testLocale,
+      testControl: testControl,
     );
     add(tileManager);
 

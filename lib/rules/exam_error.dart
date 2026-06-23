@@ -7,6 +7,7 @@ enum ExamErrorType {
   stopSignViolation,
   redLightViolation,
   roadBlocking,
+  blockedIntersection,
 
   /// A scenario task failed but isn't one of the specific rules above — e.g. an
   /// unsafe merge. The human-readable reason rides in [ExamError.detail].
@@ -33,6 +34,7 @@ extension ExamErrorTypeLabel on ExamErrorType {
         ExamErrorType.stopSignViolation => 'Missed a stop sign',
         ExamErrorType.redLightViolation => 'Ran a red light',
         ExamErrorType.roadBlocking => 'Blocked the road',
+        ExamErrorType.blockedIntersection => 'Blocked the intersection',
         ExamErrorType.scenarioFault => 'Failed the maneuver',
         ExamErrorType.cutOff => 'Cut off a driver',
         ExamErrorType.collision => 'Collision',
@@ -43,6 +45,7 @@ extension ExamErrorTypeLabel on ExamErrorType {
         ExamErrorType.stopSignViolation ||
         ExamErrorType.redLightViolation ||
         ExamErrorType.roadBlocking ||
+        ExamErrorType.blockedIntersection ||
         ExamErrorType.scenarioFault =>
           ExamErrorCategory.fault,
         ExamErrorType.cutOff => ExamErrorCategory.unsafe,

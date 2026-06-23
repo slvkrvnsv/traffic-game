@@ -44,6 +44,12 @@ class RoadBlockingEvent extends GameEvent {
   final double duration;
 }
 
+/// Player stopped inside the intersection box unable to clear it — stuck behind a
+/// downstream queue, obstructing cross traffic ("don't block the box" / gridlock).
+/// Distinct from [RoadBlockingEvent] (a clear road) and from a legitimate in-box
+/// yield (clear exit). Non-fatal — a logged exam fault.
+class BlockedIntersectionEvent extends GameEvent {}
+
 /// An NPC driver reacted to something the player did to them (e.g. a cut-off
 /// that forced a hard brake). Data-only — carries the reaction kind and where
 /// it happened, never a live car reference, so it stays safe to record/serialise.

@@ -63,12 +63,14 @@ class TrafficApp extends StatelessWidget {
             final testManeuver = args?['testManeuver'] as Maneuver?;
             final testSequence = args?['testSequence'] as List<TileType>?;
             final testLocale = args?['testLocale'] as LocaleType?;
+            final testControl = args?['testControl'] as IntersectionControl?;
             return MaterialPageRoute(
               builder: (_) => GameScreen(
                 testMode: testMode,
                 testManeuver: testManeuver,
                 testSequence: testSequence,
                 testLocale: testLocale,
+                testControl: testControl,
               ),
             );
           default:
@@ -88,12 +90,14 @@ class GameScreen extends StatefulWidget {
       this.testMode,
       this.testManeuver,
       this.testSequence,
-      this.testLocale});
+      this.testLocale,
+      this.testControl});
 
   final TileType? testMode;
   final Maneuver? testManeuver;
   final List<TileType>? testSequence;
   final LocaleType? testLocale;
+  final IntersectionControl? testControl;
 
   @override
   State<GameScreen> createState() => _GameScreenState();
@@ -107,6 +111,7 @@ class _GameScreenState extends State<GameScreen> {
         testManeuver: widget.testManeuver,
         testSequence: widget.testSequence,
         testLocale: widget.testLocale,
+        testControl: widget.testControl,
       );
 
   @override

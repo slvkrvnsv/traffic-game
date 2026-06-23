@@ -30,6 +30,7 @@ abstract class ScenarioBase {
   void onYieldViolation(double speedAtLine) {}
   void onStopSignViolation(double minSpeed) {}
   void onRedLightViolation() {}
+  void onBlockedIntersection() {}
   void onPlayerPassedYieldLine(double speed) {}
 
   /// Called when an NPC reacted to the player forcing it into a hard brake

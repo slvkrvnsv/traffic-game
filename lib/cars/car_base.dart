@@ -3,6 +3,7 @@ import 'package:flame/components.dart';
 import 'package:flutter/foundation.dart';
 import '../core/constants.dart';
 import '../core/spline_follower.dart';
+import '../debug/debug_state.dart';
 import '../core/utils.dart';
 import 'car_definition.dart';
 import 'car_painter.dart';
@@ -16,7 +17,10 @@ abstract class CarBase extends PositionComponent with SplineFollower {
     required this.definition,
     super.priority,
   }) : super(
-          size: Vector2(kCarLength, kCarWidth),
+          size: Vector2(
+            kCarLength * definition.lengthRatio,
+            kCarWidth * definition.widthRatio,
+          ),
           anchor: Anchor.center,
         );
 
@@ -201,12 +205,12 @@ abstract class CarBase extends PositionComponent with SplineFollower {
       braking: isBraking && speed > 0.0,
       wheelSteerAngle: _wheelSteerAngle,
     );
-    if (kDebugMode) _debugRenderObb(canvas);
+    if (kDebugMode && DebugState.showDebug) _debugRenderObb(canvas);
   }
 
   void _debugRenderObb(Canvas canvas) {
     canvas.drawRect(
-      Rect.fromCenter(center: Offset.zero, width: kCarLength, height: kCarWidth),
+      Rect.fromCenter(center: Offset.zero, width: size.x, height: size.y),
       Paint()
         ..color = debugIsColliding
             ? const Color(0xEEFF2222)

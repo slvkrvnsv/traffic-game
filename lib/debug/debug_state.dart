@@ -7,6 +7,9 @@ import '../tiles/tile_base.dart';
 class DebugState {
   DebugState._();
 
+  /// False in test mode so end-users see a clean screen. Toggled by TrafficGame.
+  static bool showDebug = true;
+
   // --- Tile info ---
   static String tileType = '';
   static String scenarioType = '';

@@ -4,6 +4,7 @@ import 'package:flame/game.dart';
 import 'package:flutter/material.dart';
 import 'core/constants.dart';
 import 'core/game_bus.dart';
+import 'debug/debug_state.dart';
 import 'core/maneuver.dart';
 import 'tiles/tile_registry.dart';
 import 'world/camera_controller.dart';
@@ -15,7 +16,8 @@ class TrafficGame extends FlameGame {
       {this.testMode,
       this.testManeuver,
       this.testSequence,
-      this.testLocale});
+      this.testLocale,
+      this.testControl});
 
   /// If set, loop this tile type in test mode.
   final TileType? testMode;
@@ -29,6 +31,9 @@ class TrafficGame extends FlameGame {
   /// If set, dress every tile as this locale (test mode).
   final LocaleType? testLocale;
 
+  /// If set, pin every intersection's control (test mode): stop or light.
+  final IntersectionControl? testControl;
+
   late final GameWorld _world;
   late final CameraController _cameraController;
   late StreamSubscription<GameOverEvent> _gameOverSub;
@@ -41,13 +46,15 @@ class TrafficGame extends FlameGame {
   @override
   Future<void> onLoad() async {
     // Tiles are registered once at app startup in main.dart.
+    DebugState.showDebug = testMode != null || testSequence != null;
 
     // Build world + camera
     _world = GameWorld(
         testMode: testMode,
         testManeuver: testManeuver,
         testSequence: testSequence,
-        testLocale: testLocale);
+        testLocale: testLocale,
+        testControl: testControl);
 
     final camera = CameraComponent(world: _world)
       ..viewfinder.zoom = kCameraZoom

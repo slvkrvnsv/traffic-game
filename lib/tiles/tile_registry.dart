@@ -32,16 +32,27 @@ enum TileType {
 ///     on intersections — zebra crossings everyone must yield to.
 enum LocaleType { interurban, urban }
 
+/// How a 4-way intersection is controlled — an all-way STOP or a traffic light.
+/// Defined here (beside [TileType]) so the spawn context and the test menu can
+/// pin it without importing the tile. The live read is `IntersectionTile.control`
+/// (derived from the dressed scenario); this enum is also the test-mode override.
+enum IntersectionControl { allWayStop, trafficLight }
+
 /// Per-spawn variation passed to tile factories. Tiles pick their own
 /// randomness from [rng]; [maneuver] pins the commanded maneuver (test mode);
-/// [locale] dresses the tile (urban vs interurban) — see [LocaleType].
+/// [locale] dresses the tile (urban vs interurban) — see [LocaleType];
+/// [control] pins an intersection's control (test mode) — null = roll it.
 class TileSpawnContext {
   const TileSpawnContext(
-      {this.maneuver, this.rng, this.locale = LocaleType.interurban});
+      {this.maneuver,
+      this.rng,
+      this.locale = LocaleType.interurban,
+      this.control});
 
   final Maneuver? maneuver;
   final Random? rng;
   final LocaleType locale;
+  final IntersectionControl? control;
 }
 
 typedef TileFactory = TileBase Function(TileSpawnContext ctx);

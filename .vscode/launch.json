@@ -8,18 +8,21 @@
         {
             "name": "traffic-game",
             "request": "launch",
-            "type": "dart"
+            "type": "dart",
+            "program": "lib/main.dart"
         },
         {
             "name": "traffic-game (profile mode)",
             "request": "launch",
             "type": "dart",
+            "program": "lib/main.dart",
             "flutterMode": "profile"
         },
         {
             "name": "traffic-game (release mode)",
             "request": "launch",
             "type": "dart",
+            "program": "lib/main.dart",
             "flutterMode": "release"
         }
     ]

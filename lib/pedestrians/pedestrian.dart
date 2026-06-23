@@ -76,10 +76,21 @@ class Pedestrian extends PositionComponent with SplineFollower {
   // intrusion (rising edge), independent of whether the car blocks the next step.
   bool _startledByPlayer = false;
 
+  // Set each frame by TileManager: a traffic light shows don't-walk for the
+  // crossing this pedestrian is about to step onto, so it waits at the curb.
+  // Unlike the NPC-car hold this NEVER times out — the light always cycles back
+  // to walk — so it's grouped with the never-timeout player hold below.
+  bool _heldBySignal = false;
+
   void setBlocked({required bool player, required bool npc}) {
     _blockedByPlayer = player;
     _blockedByNpc = npc;
   }
+
+  /// Set each frame by TileManager: hold at the curb for a red pedestrian
+  /// signal (light intersections only). The pedestrian only steps onto a
+  /// crossing once its road is stopped — see [TileBase.pedestrianHeldBySignal].
+  void setSignalHold(bool held) => _heldBySignal = held;
 
   /// Set each frame by TileManager from [TileManager.pedAvoidSideStep]: a signed
   /// suggested side-step (±[kPedSideStep]) when a converging walker is predicted
@@ -109,8 +120,9 @@ class Pedestrian extends PositionComponent with SplineFollower {
     // ghosting. The player hold never times out (no unfair crash); the NPC hold
     // breaks after kPedHoldTimeout to clear a rare mutual stand-off.
     _npcHoldTime = _blockedByNpc ? _npcHoldTime + dt : 0.0;
-    final bool hold =
-        _blockedByPlayer || (_blockedByNpc && _npcHoldTime < kPedHoldTimeout);
+    final bool hold = _blockedByPlayer ||
+        _heldBySignal || // red ped signal — never times out (the light cycles)
+        (_blockedByNpc && _npcHoldTime < kPedHoldTimeout);
     // Resolve the avoidance encounter: a live suggestion commits a lean
     // direction (held for the whole pass) and re-arms the linger; once the
     // suggestion clears, the linger keeps the lean out across the brief alongside

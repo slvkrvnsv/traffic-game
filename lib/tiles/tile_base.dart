@@ -4,6 +4,7 @@ import 'package:flame/components.dart';
 import 'package:flutter/foundation.dart';
 import '../core/constants.dart';
 import '../core/maneuver.dart';
+import '../debug/debug_state.dart';
 import '../core/spline.dart';
 import '../cars/npc_car.dart';
 import '../cars/player_car.dart';
@@ -185,6 +186,13 @@ abstract class TileBase extends PositionComponent {
   /// Default: a plain road never requires the player to wait.
   bool get playerMustWait => false;
 
+  /// Whether a crossing pedestrian at world [worldPos] heading [worldDir] must
+  /// hold at the curb for a traffic signal — i.e. the crossing it is about to
+  /// step onto is showing don't-walk. Default: no signal here (stop-sign and
+  /// plain tiles never hold pedestrians). A traffic-light intersection overrides
+  /// it. Set on the pedestrian each frame by TileManager.
+  bool pedestrianHeldBySignal(Vector2 worldPos, Vector2 worldDir) => false;
+
   /// Posted speed limit for this tile in km/h, or null for no limit. Authored
   /// in km/h (designer-facing); enforcement compares against the player's speed
   /// via [speedLimitUnits]. Hook for the upcoming per-tile speed-limit feature —
@@ -321,7 +329,7 @@ abstract class TileBase extends PositionComponent {
   /// Draws player paths (green) and NPC paths (orange) as thin sampled lines,
   /// plus entry/exit anchor dots and the conflict zone box if applicable.
   void debugRenderSplines(Canvas canvas) {
-    if (!kDebugMode) return;
+    if (!kDebugMode || !DebugState.showDebug) return;
 
     // Player paths — bright green
     final playerPaint = Paint()

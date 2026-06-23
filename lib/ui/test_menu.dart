@@ -24,11 +24,15 @@ class TestMenuScreen extends StatefulWidget {
 class _TestMenuScreenState extends State<TestMenuScreen> {
   LocaleType _locale = LocaleType.interurban;
 
-  /// A looped tile-type entry (optionally with a pinned maneuver).
+  /// A looped tile-type entry. [maneuver] pins the commanded turn and [control]
+  /// pins an intersection's control (stop vs light); both default to random.
   static _TestEntry _tile(String label, IconData icon, TileType type,
-          [Maneuver? maneuver]) =>
-      _TestEntry(label, icon,
-          {'testMode': type, 'testManeuver': maneuver});
+          {Maneuver? maneuver, IntersectionControl? control}) =>
+      _TestEntry(label, icon, {
+        'testMode': type,
+        'testManeuver': maneuver,
+        'testControl': control,
+      });
 
   /// The lane-transition course: 2-lane → merge (2→1) → 1-lane → extend (1→2),
   /// looped. Exercises both connectors and both straights in sequence.
@@ -40,22 +44,21 @@ class _TestMenuScreenState extends State<TestMenuScreen> {
   ];
 
   static List<_TestEntry> _entriesFor(TileType type) => switch (type) {
-        TileType.straight => [
-            _tile('Straight Road', Icons.straight_rounded, TileType.straight),
-          ],
+        // The 4-way intersection, one entry per control so each is reliable to
+        // test (the maneuver and locale are still rolled — locale by the toggle).
+        // In free-drive the control is rolled 50/50; here it's pinned.
         TileType.intersection4way => [
-            _tile('4-Way Stop — Random', Icons.shuffle_rounded,
-                TileType.intersection4way),
-            _tile('4-Way Stop — Straight', Icons.straight_rounded,
-                TileType.intersection4way, Maneuver.straight),
-            _tile('4-Way Stop — Turn Left', Icons.turn_left_rounded,
-                TileType.intersection4way, Maneuver.left),
-            _tile('4-Way Stop — Turn Right', Icons.turn_right_rounded,
-                TileType.intersection4way, Maneuver.right),
+            _tile('Intersection — Stop', Icons.stop_circle_rounded,
+                TileType.intersection4way,
+                control: IntersectionControl.allWayStop),
+            _tile('Intersection — Traffic Light', Icons.traffic_rounded,
+                TileType.intersection4way,
+                control: IntersectionControl.trafficLight),
           ],
-        // straight1Lane / laneMerge / laneExtend are only meaningful chained in
-        // the Connectors course (alone they'd seam a 1-lane end onto a 2-lane
-        // start). The wildcard keeps this switch exhaustive over TileType.
+        // Every other type is only meaningful chained: straight1Lane / laneMerge
+        // / laneExtend live in the Connectors course, and the plain straight
+        // seams onto nothing useful on its own. Kept off the menu deliberately —
+        // the wildcard keeps this switch exhaustive over TileType.
         _ => const <_TestEntry>[],
       };
 

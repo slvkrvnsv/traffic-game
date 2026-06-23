@@ -43,7 +43,7 @@ class ViolationDetector extends Component {
   // ---------------------------------------------------------------------------
 
   void _checkCollisions() {
-    if (kDebugMode) {
+    if (kDebugMode && DebugState.showDebug) {
       playerCar.debugIsColliding = false;
       DebugState.playerColliding = false;
       DebugState.nearestNpcGap = double.infinity;
@@ -54,12 +54,12 @@ class ViolationDetector extends Component {
     }
 
     for (final npc in tileManager.allNpcs) {
-      if (kDebugMode) {
+      if (kDebugMode && DebugState.showDebug) {
         final d = playerCar.position.distanceTo(npc.position);
         if (d < DebugState.nearestNpcGap) DebugState.nearestNpcGap = d;
       }
       if (_carsOverlap(playerCar, npc)) {
-        if (kDebugMode) {
+        if (kDebugMode && DebugState.showDebug) {
           playerCar.debugIsColliding = true;
           npc.debugIsColliding = true;
           DebugState.playerColliding = true;
@@ -73,7 +73,7 @@ class ViolationDetector extends Component {
 
     for (final ped in pedestrians) {
       if (_playerHitsPedestrian(playerCar, ped)) {
-        if (kDebugMode) {
+        if (kDebugMode && DebugState.showDebug) {
           playerCar.debugIsColliding = true;
           DebugState.playerColliding = true;
           DebugState.npcCollisionLane = -1;
@@ -86,8 +86,8 @@ class ViolationDetector extends Component {
 
   bool _carsOverlap(PlayerCar a, NpcCar b) {
     return obbOverlap(
-      a.position, kCarWidth, kCarLength, a.angle,
-      b.position, kCarWidth, kCarLength, b.angle,
+      a.position, a.size.y, a.size.x, a.angle,
+      b.position, b.size.y, b.size.x, b.angle,
     );
   }
 

@@ -34,6 +34,7 @@ class TileManager extends Component {
     this.testManeuver,
     this.testSequence,
     this.testLocale,
+    this.testControl,
     Random? rng,
   }) : _rng = rng ?? Random();
 
@@ -58,6 +59,11 @@ class TileManager extends Component {
   /// If set, pin every tile to this locale (test mode). Null → free-drive rolls
   /// the locale in stretches (see [_nextLocale]).
   final LocaleType? testLocale;
+
+  /// If set, pin every intersection's control (test mode): all-way stop or
+  /// traffic light. Null → the control is rolled (free-drive, or a "random"
+  /// menu entry) via the scenario registry.
+  final IntersectionControl? testControl;
 
   /// Next index into [testSequence]; advanced once per spawned tile.
   int _seqIndex = 0;
@@ -152,7 +158,11 @@ class TileManager extends Component {
 
   TileBase _createTile(TileType type, LocaleType locale) => TileRegistry.create(
       type,
-      TileSpawnContext(maneuver: testManeuver, rng: _rng, locale: locale));
+      TileSpawnContext(
+          maneuver: testManeuver,
+          rng: _rng,
+          locale: locale,
+          control: testControl));
 
   void _activateTile(TileBase tile) {
     tile.onActivate();
@@ -251,8 +261,29 @@ class TileManager extends Component {
         }
       }
     }
+    _updatePedestrianSignals();
     _updatePedestrianCarAvoidance();
     _updatePedestrianPedAvoidance();
+  }
+
+  /// Hold each crossing pedestrian at the curb while a traffic light shows
+  /// don't-walk for the crossing it is about to step onto (light intersections
+  /// only — every other tile returns false). The decision is computed across the
+  /// active tiles and set ONCE per pedestrian, so a tile that isn't the one the
+  /// pedestrian is at never clears the hold another tile imposed.
+  void _updatePedestrianSignals() {
+    if (pedestrians.isEmpty) return;
+    for (final ped in pedestrians) {
+      final fwd = Vector2(cos(ped.angle), sin(ped.angle));
+      bool held = false;
+      for (final tile in _activeTiles) {
+        if (tile.pedestrianHeldBySignal(ped.position, fwd)) {
+          held = true;
+          break;
+        }
+      }
+      ped.setSignalHold(held);
+    }
   }
 
   /// Pedestrians never walk through each other and never freeze face-to-face: a
@@ -400,7 +431,7 @@ class TileManager extends Component {
   }
 
   void _updateDebugState() {
-    if (!kDebugMode) return;
+    if (!kDebugMode || !DebugState.showDebug) return;
     final tile = activeTile;
     if (tile != null) DebugState.updateFromTile(tile);
     DebugState.activeTileCount = _activeTiles.length;

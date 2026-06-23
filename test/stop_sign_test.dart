@@ -41,6 +41,13 @@ void main() {
     expect(s.result.reason, contains('npc_car'));
   });
 
+  test('blocking the intersection fails the task', () {
+    final s = StopSignScenario();
+    s.onBlockedIntersection();
+    expect(s.result.status, ScenarioStatus.failed);
+    expect(s.result.reason, contains('Blocked the intersection'));
+  });
+
   test('reset returns the scenario to ongoing and re-arms the pass gate', () {
     final s = StopSignScenario();
     s.onStopSignViolation(5);
@@ -52,9 +59,16 @@ void main() {
     expect(s.result.status, ScenarioStatus.passed);
   });
 
-  test('the registry dresses the 4-way intersection with StopSignScenario', () {
-    final s = ScenarioRegistry.forTile(TileType.intersection4way);
-    expect(s, isA<StopSignScenario>());
+  test('the 4-way intersection still offers the all-way-stop variant', () {
+    // The intersection is now dressed as a stop OR a traffic light, rolled
+    // randomly (see ScenarioRegistry), so a single draw is no longer
+    // deterministic — but the all-way-stop variant must still be offered. (The
+    // traffic-light side of the same seam is covered in traffic_light_test.)
+    final drawn = [
+      for (var i = 0; i < 200; i++)
+        ScenarioRegistry.forTile(TileType.intersection4way),
+    ];
+    expect(drawn.any((s) => s is StopSignScenario), isTrue);
   });
 
   // The all-way-stop arbiter (first-to-stop-first-to-go). These exercise the

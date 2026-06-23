@@ -38,6 +38,15 @@ class StopSignScenario extends ScenarioBase {
         'Pulled out without giving way — another driver had the right of way.');
   }
 
+  /// Entering the box without room to clear it — left stuck inside, blocking
+  /// cross traffic ("don't block the box").
+  @override
+  void onBlockedIntersection() {
+    _violated = true;
+    result = const ScenarioResult.failed(
+        'Blocked the intersection — you stopped in the box with no room to clear.');
+  }
+
   @override
   void onSafelyCleared() {
     // No violation fired means the tile credited a full stop — pass.

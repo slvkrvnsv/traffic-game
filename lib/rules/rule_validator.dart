@@ -71,6 +71,11 @@ class RuleValidator extends Component {
       scenario?.onRedLightViolation();
       _checkResult(scenario, kind: ExamErrorType.redLightViolation);
     }));
+    _subs.add(GameBus.instance.on<BlockedIntersectionEvent>().listen((_) {
+      final scenario = _activeScenario;
+      scenario?.onBlockedIntersection();
+      _checkResult(scenario, kind: ExamErrorType.blockedIntersection);
+    }));
 
     // An NPC reacting to a player cut-off is bubble-only feedback on most tiles;
     // a graded merge routes it to its scenario, which fails only if the player

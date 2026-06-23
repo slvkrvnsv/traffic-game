@@ -10,17 +10,25 @@ import '../../cars/npc_car.dart';
 import '../../cars/player_car.dart';
 import '../../pedestrians/pedestrian.dart';
 import '../../feedback/driver_reaction.dart';
+import '../../feedback/driver_reaction_detector.dart' show DriverReactionDetector;
 import '../../feedback/reaction_bubble.dart';
 import '../environment.dart';
+import '../../debug/debug_state.dart';
 import '../tile_base.dart';
 import '../tile_registry.dart';
+import '../traffic_signal.dart';
 import '../scenarios/scenario_base.dart';
 import '../scenarios/scenario_registry.dart';
 import '../scenarios/stop_sign_scenario.dart';
+import '../scenarios/traffic_light_scenario.dart';
 
 /// Cardinal heading of a vehicle travelling through the intersection.
 /// Ordered clockwise so `(index + 1) % 4` = next clockwise neighbour.
 enum Heading { north, east, south, west }
+
+// [IntersectionControl] (all-way stop vs traffic light) lives in tile_registry —
+// it's read here via the scenario the tile was dressed with (see [control]) and
+// is pinnable in test mode through [TileSpawnContext.control].
 
 /// 4-way US all-way STOP intersection.
 ///
@@ -52,6 +60,35 @@ class IntersectionTile extends TileBase {
   @override
   Maneuver? get commandedManeuver => maneuver;
 
+  /// Whether this intersection is an all-way stop or a traffic light — read off
+  /// the scenario it was dressed with, so the control axis rides on the existing
+  /// geometry × scenario seam (see [ScenarioRegistry]).
+  IntersectionControl get control => scenario is TrafficLightScenario
+      ? IntersectionControl.trafficLight
+      : IntersectionControl.allWayStop;
+
+  /// The signal cycle (traffic-light control only). Seeded from the tile's fixed
+  /// world position so neighbouring lights aren't phase-locked and the start
+  /// phase is deterministic. Lazily built (after [place], so the seed is stable)
+  /// and ticked every frame in [update].
+  late final TrafficSignalController _signal =
+      TrafficSignalController(seed: position.x.round() + position.y.round() * 31);
+
+  bool _isNorthSouth(Heading h) =>
+      h == Heading.north || h == Heading.south;
+
+  /// The phase the signal shows the given approach.
+  SignalPhase _phaseOf(Heading h) =>
+      _signal.phaseFor(northSouth: _isNorthSouth(h));
+
+  @override
+  void update(double dt) {
+    super.update(dt); // ticks the scenario
+    // Cycle the lights for every live signal tile (active and trailing), so the
+    // signals a passed-but-still-visible tile carries keep changing.
+    if (control == IntersectionControl.trafficLight) _signal.tick(dt);
+  }
+
   static void register() {
     TileRegistry.register(
       TileType.intersection4way,
@@ -60,8 +97,14 @@ class IntersectionTile extends TileBase {
             Maneuver.values[
                 (ctx.rng ?? math.Random()).nextInt(Maneuver.values.length)],
         locale: ctx.locale,
-        scenario:
-            ScenarioRegistry.forTile(TileType.intersection4way, rng: ctx.rng),
+        // Free-drive rolls the control via the registry; test mode can pin it
+        // (ctx.control) so a given menu entry is reliably a stop or a light.
+        scenario: switch (ctx.control) {
+          IntersectionControl.allWayStop => StopSignScenario(),
+          IntersectionControl.trafficLight => TrafficLightScenario(),
+          null => ScenarioRegistry.forTile(TileType.intersection4way,
+              rng: ctx.rng),
+        },
       ),
       entryLanes: 1, // single-lane approach and exit each way
       exitLanes: 1,
@@ -335,16 +378,25 @@ class IntersectionTile extends TileBase {
   ];
 
   /// Spawnable NPC lanes, one per approach in [Heading.values] order
-  /// (lane index == approach heading index). Each lane offers all three
-  /// movements; the spawner picks one per car, so NPC traffic turns too.
+  /// (lane index == approach heading index). Each lane offers its movements; the
+  /// spawner picks one per car, so NPC traffic turns too.
+  ///
+  /// At a traffic light the LEFT turn is dropped: a permissive left would have to
+  /// yield to oncoming traffic on the same green, and rather than arbitrate that
+  /// (a later, protected-left pass) NPCs simply go straight or right through a
+  /// signal — so a green box is always conflict-free. The all-way stop keeps all
+  /// three movements (its ticketing arbitrates every conflict). The player is
+  /// unaffected — it can still be commanded a left and must yield to oncoming.
   @override
   late final List<List<Spline>> npcLanes = [
     for (int k = 0; k < Heading.values.length; k++)
       [
         for (final m in Maneuver.values)
-          Spline([
-            for (final p in _southApproachPoints(m)) _rotateQuarters(p, k),
-          ]),
+          if (!(control == IntersectionControl.trafficLight &&
+              m == Maneuver.left))
+            Spline([
+              for (final p in _southApproachPoints(m)) _rotateQuarters(p, k),
+            ]),
       ],
   ];
 
@@ -508,6 +560,23 @@ class IntersectionTile extends TileBase {
     }
   }
 
+  /// Distance from [localPos] to the FAR edge of the conflict box along the
+  /// travel axis (positive while still short of it; a vehicle has fully crossed
+  /// once its body is past this). Drives the box-clearance ("don't block the
+  /// box") check.
+  double _gapToBoxFarEdge(Heading heading, Vector2 localPos) {
+    switch (heading) {
+      case Heading.north: // moving -y; far edge at y = cy - halfBox
+        return localPos.y - (_cy - _halfBox);
+      case Heading.south: // moving +y; far edge at y = cy + halfBox
+        return (_cy + _halfBox) - localPos.y;
+      case Heading.east: // moving +x; far edge at x = cx + halfBox
+        return (_cx + _halfBox) - localPos.x;
+      case Heading.west: // moving -x; far edge at x = cx - halfBox
+        return localPos.x - (_cx - _halfBox);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // NPC sensor wiring
   // ---------------------------------------------------------------------------
@@ -526,7 +595,7 @@ class IntersectionTile extends TileBase {
     super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
 
     // Cache for the debug zebra-box overlay (rendered separately).
-    if (kDebugMode) _debugPeds = pedestrians;
+    if (kDebugMode && DebugState.showDebug) _debugPeds = pedestrians;
 
     // The pedestrian hold for every vehicle — the distance to the nearest
     // crossing pedestrian ahead on its OWN movement spline, or null if clear.
@@ -551,6 +620,27 @@ class IntersectionTile extends TileBase {
     // (and what exempts the road-block penalty). Entry and exit (turn) crossings
     // are both covered by walking the player's own spline — no separate cone.
     _pedBlockingPlayer = playerPedStop != null;
+
+    // Traffic-light control: the signal phase arbitrates the box, so the
+    // all-way-stop ticketing below is bypassed entirely. Everything shared —
+    // the pedestrian probe (above), the zone test, the stop-line geometry, the
+    // player-approach state machine and the pedestrian give-way fault — is
+    // reused; only the per-NPC apply, the player's at-line verdict and the
+    // signage differ. (Left turns aren't offered to NPCs here — see [npcLanes].)
+    if (control == IntersectionControl.trafficLight) {
+      _applySignalToNpcs(pedStopById, allNpcs, playerCar);
+      _signalPlayerWait(playerCar);
+      _checkPlayerApproach(playerCar); // resets latches + red-light fault
+      // Permissive left gives way to oncoming on the SAME green. Not checked on
+      // yellow (oncoming is itself clearing) or red (the run-the-red fault
+      // covers it) — a deliberate exemption, gated here not by accident.
+      if (_phaseOf(Heading.north) == SignalPhase.green) {
+        _checkLeftYieldToOncoming(playerCar, requireRightOfWay: false);
+      }
+      _checkPedestrianGiveWay(playerCar, pedestrians);
+      _checkBlockedIntersection(dt, playerCar, allNpcs);
+      return;
+    }
 
     // Collect every vehicle that sits on one of *this* tile's lanes together
     // with its heading and identity, in tile-local coordinates.
@@ -578,22 +668,30 @@ class IntersectionTile extends TileBase {
             speed: npc.speed,
           ),
     ];
-    // Cars yielding to a pedestrian AT ENTRY — stopped behind the box for a
-    // crossing ahead, so they won't enter the box this turn. They step out of
-    // the right-of-way contest (see [_arbitrateAllWayStop]): the box is free for
-    // cross traffic and the player isn't faulted for going around them. Scoped
-    // to `approaching` so a car stopped INSIDE the box (for an exit crossing)
-    // still blocks — it physically occupies the intersection.
-    final pedYielding = <Object>{
+    // Vehicles that step OUT of the right-of-way contest while held at their own
+    // line — the box stays free for cross traffic, they keep their ticket to
+    // reclaim their turn, and the player isn't faulted for going around them.
+    // Scoped to `approaching` + at/behind the line (a car stopped INSIDE the box
+    // still blocks — it physically occupies the intersection). Two reasons, one
+    // handling:
+    //   * a pedestrian on their crossing ahead (`pedStop != null`), AND/OR
+    //   * (anti-gridlock, "don't block the box") an NPC that can't fully clear
+    //     the box — a stopped queue ahead leaves no room past the far edge — so
+    //     it holds before entering instead of stalling in the intersection.
+    // The player is never auto-held here; it earns the blocked-intersection
+    // fault ([_checkBlockedIntersection]) if it gets stuck in the box itself.
+    final yieldingAtEntry = <Object>{
       for (final v in samples)
-        if (isPedYieldingAtEntry(
-            _zoneOf(v.heading, v.localPos) == _Zone.approaching &&
-                _gapToStopLine(v.heading, v.localPos) >= 0,
-            pedStopById[v.id]))
+        if (_zoneOf(v.heading, v.localPos) == _Zone.approaching &&
+            _gapToStopLine(v.heading, v.localPos) >= 0 &&
+            (pedStopById[v.id] != null ||
+                (v.id is NpcCar &&
+                    cannotClearBox(_gapToBoxFarEdge(v.heading, v.localPos),
+                        _stoppedLeadGap(v.id as NpcCar, allNpcs, playerCar)))))
           v.id,
     };
 
-    final going = _arbitrateAllWayStop(dt, samples, pedYielding);
+    final going = _arbitrateAllWayStop(dt, samples, yieldingAtEntry);
     _playerReleased = going.contains(_playerId);
 
     // Apply the decision to each NPC. A car not yet released must stop at its
@@ -617,7 +715,7 @@ class IntersectionTile extends TileBase {
       // pedestrian ahead on this car's own path, or null if the way is clear.
       // Always evaluated — entry crossing, exit crossing, mid-turn, all the same
       // probe — and the brain brakes to it like any other stop-target. Computed
-      // once above (also feeds `pedYielding`), looked up here.
+      // once above (also feeds `yieldingAtEntry`), looked up here.
       final pedStop = pedStopById[npc];
 
       if (z != _Zone.approaching) {
@@ -658,9 +756,9 @@ class IntersectionTile extends TileBase {
     // The player legitimately waits while approaching/inside the box until the
     // arbiter releases it — used to exempt that stop from the road-blocking
     // penalty. (The player isn't *forced* to stop here; the stop-sign fault is
-    // graded separately in [_checkPlayerStop].)
+    // graded separately in [_checkPlayerApproach].)
     final playerLocal = worldToLocal(playerCar.position);
-    if (kDebugMode) _debugPlayerLocal = playerLocal;
+    if (kDebugMode && DebugState.showDebug) _debugPlayerLocal = playerLocal;
     final pZone = _zoneOf(Heading.north, playerLocal);
     // Waiting your turn AT THE LINE (approaching) is always exempt from the
     // road-blocking penalty. Inside the box it's exempt ONLY while another car
@@ -674,12 +772,366 @@ class IntersectionTile extends TileBase {
         (pZone == _Zone.inBox && _otherCarInBox) ||
         _pedBlockingPlayer; // waiting for someone on the crossing is rational
 
-    // Player stop-sign violation detection.
-    _checkPlayerStop(playerCar, samples, pedestrians);
+    // Player stop-sign / fail-to-yield detection (at-line verdict, all-way stop).
+    _checkPlayerApproach(playerCar);
+    // US rule 4 (straight-before-left on simultaneous arrival): a left-turning
+    // player gives way to an oncoming straight car crossing with the right of
+    // way. The at-line check exempts left-vs-oncoming (pulling into the box to
+    // wait isn't a fault); this catches actually cutting it off mid-box.
+    _checkLeftYieldToOncoming(playerCar, requireRightOfWay: true);
 
     // Pedestrian give-way fault — evaluated separately so it also covers the EXIT
-    // crossings, which sit outside the box (where [_checkPlayerStop] bails).
+    // crossings, which sit outside the box (where [_checkPlayerApproach] bails).
     _checkPedestrianGiveWay(playerCar, pedestrians);
+
+    // "Don't block the box" — stuck inside the intersection behind a queue.
+    _checkBlockedIntersection(dt, playerCar, allNpcs);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Traffic-light control — signal-phase arbitration (replaces ticketing)
+  // ---------------------------------------------------------------------------
+
+  /// The stop-target a signalised approach imposes on a vehicle [gapToLine] from
+  /// its stop line (positive while still BEFORE the line, negative once AT or
+  /// PAST it), folded with any [pedStop] still ahead.
+  ///
+  /// The commit-&-clear rule: green never stops for the light; on a non-green a
+  /// car still before the line holds AT it, but a car at or past the line
+  /// (`gapToLine <= 0`) gets NO light stop — it must clear the box, never freeze
+  /// in the junction mouth when the light drops to yellow/red mid-crossing (a
+  /// negative gap fed to the brain would brake it to a dead stop in the box).
+  /// This is the signal's equivalent of the all-way stop's sticky `_granted`.
+  /// Pure, so the seam is unit-testable without live cars.
+  @visibleForTesting
+  static double? signalStopTarget(
+          bool green, double gapToLine, double? pedStop) =>
+      _nearerStop((green || gapToLine <= 0) ? null : gapToLine, pedStop);
+
+  /// Apply the signal phase to every NPC on this tile. Traffic with a green
+  /// flows through at speed; traffic facing yellow or red holds at its stop line
+  /// — the same kinematic brake the all-way-stop hold uses, folded together with
+  /// the pedestrian probe via [_nearerStop]. A car already in the box commits and
+  /// clears. NPC left turns aren't offered at a signal (see [npcLanes]), so a
+  /// green box never has a permissive-left conflict to negotiate.
+  void _applySignalToNpcs(Map<Object, double?> pedStopById,
+      List<NpcCar> allNpcs, PlayerCar playerCar) {
+    for (final npc in npcs) {
+      npc.setHeadlightFlash(false); // no hesitation-wave at a signal
+      if (npc.laneIndex < 0 ||
+          npc.laneIndex >= Heading.values.length ||
+          npc.spline == null) {
+        npc.brain.intersectionRuleActive = false;
+        npc.brain.hasRightOfWay = true;
+        npc.brain.stopTargetDistance = null;
+        npc.brain.speedCap = null;
+        continue;
+      }
+      final heading = Heading.values[npc.laneIndex];
+      final localPos = worldToLocal(npc.position);
+      final z = _zoneOf(heading, localPos);
+      final pedStop = pedStopById[npc];
+
+      if (z != _Zone.approaching) {
+        // In the box or past the line — committed; the only thing left to stop
+        // for is a pedestrian on a crossing still ahead. Keep a calm crossing
+        // speed only while a zebra is actually on the path ahead (a turn's exit
+        // crosswalk, where [_zoneOf] already reads `far`); otherwise let
+        // straight-through traffic clear the box at speed.
+        npc.brain.intersectionRuleActive = false;
+        npc.brain.hasRightOfWay = true;
+        npc.brain.stopTargetDistance = pedStop;
+        final overCrossing =
+            _crossingAhead(npc.spline!, npc.distanceTravelled, kCarLength * 2);
+        npc.brain.speedCap = overCrossing ? kNpcTurnSpeed : null;
+        continue;
+      }
+
+      // Approaching: go on green, otherwise hold at the line. Green traffic is
+      // NOT capped to crossing speed (unlike a car easing out of a dead stop) —
+      // it flows through; a turning car is slowed onto its curve by the brain's
+      // own curve-speed cap, so right-turners still take the corner calmly.
+      final green = _phaseOf(heading) == SignalPhase.green;
+      final gap = _gapToStopLine(heading, localPos);
+      final committed = green || gap <= 0; // green, or already at/past the line
+      // Don't block the box: even on green, hold at the line if there's no room
+      // to fully clear (a stopped queue ahead) — anti-gridlock. Red already holds
+      // via signalStopTarget, and cross traffic is red, so holding here stalls
+      // no one. Only while still BEFORE the line (gap > 0); once in, commit & clear.
+      final boxBlocked = green &&
+          gap > 0 &&
+          cannotClearBox(_gapToBoxFarEdge(heading, localPos),
+              _stoppedLeadGap(npc, allNpcs, playerCar));
+      final goNow = committed && !boxBlocked;
+      npc.brain.intersectionRuleActive = !goNow;
+      npc.brain.hasRightOfWay = goNow;
+      npc.brain.stopTargetDistance = _nearerStop(
+          signalStopTarget(green, gap, pedStop), boxBlocked ? gap : null);
+      npc.brain.speedCap = null;
+    }
+  }
+
+  /// Mark the player's standstill at a signal as a *rational* wait (exempt from
+  /// the road-blocking penalty) when it is one: held at a red, yielding to a car
+  /// already in the box, waiting on a pedestrian, or — on a commanded left —
+  /// giving way to oncoming traffic on a permissive green. Oncoming runs in the
+  /// opposite lane, so the road-block detector's in-lane forward scan can't see
+  /// it; this flag is the only lever, mirroring the all-way-stop in-box yield.
+  /// Sitting still on a green with a clear box and no oncoming is NOT exempt.
+  void _signalPlayerWait(PlayerCar playerCar) {
+    final playerLocal = worldToLocal(playerCar.position);
+    if (kDebugMode && DebugState.showDebug) _debugPlayerLocal = playerLocal;
+    final pZone = _zoneOf(Heading.north, playerLocal);
+    final green = _phaseOf(Heading.north) == SignalPhase.green;
+
+    _otherCarInBox = npcs.any((n) =>
+        n.laneIndex >= 0 &&
+        n.laneIndex < Heading.values.length &&
+        n.spline != null &&
+        _zoneOf(Heading.values[n.laneIndex], worldToLocal(n.position)) ==
+            _Zone.inBox);
+
+    // A permissive LEFT gives way to oncoming (the south approach, as the
+    // all-way-stop fail-to-yield exemption also encodes). Waiting for a gap is
+    // rational while an oncoming car is approaching or in the box.
+    final oncomingPresent = maneuver == Maneuver.left &&
+        npcs.any((n) {
+          if (n.laneIndex != Heading.south.index || n.spline == null) {
+            return false;
+          }
+          final z = _zoneOf(Heading.south, worldToLocal(n.position));
+          return z == _Zone.approaching || z == _Zone.inBox;
+        });
+
+    _playerMustWait = (pZone == _Zone.approaching && !green) ||
+        (pZone == _Zone.inBox && _otherCarInBox) ||
+        ((pZone == _Zone.approaching || pZone == _Zone.inBox) &&
+            oncomingPresent) ||
+        _pedBlockingPlayer;
+  }
+
+  /// Fail-to-yield on a LEFT turn across oncoming through-traffic (the south
+  /// approach going straight) — shared by both controls. Fires when the *moving*
+  /// player pulls across in front of an oncoming STRAIGHT car close/fast enough
+  /// to be forced into a hard brake ([leftTurnCutsOffOncoming]) — it didn't wait
+  /// for a safe gap. Waiting in the box (stopped) is never a fault (and is
+  /// road-block-exempt — see [_signalPlayerWait]); turning into a clear gap is
+  /// fine (a far/slow car isn't cut off); an actual collision is still the only
+  /// game-over. One fault per approach (shares the [_yieldViolationFired] latch,
+  /// reset far-south in [_checkPlayerApproach]).
+  ///
+  /// [requireRightOfWay] is the per-control difference:
+  ///   * LIGHT (false): any oncoming on the same green has priority over a
+  ///     permissive left — green traffic is flowing by definition.
+  ///   * all-way STOP (true): only a car actually crossing with the right of way
+  ///     (granted, or already in the box) counts — US rule 4 (straight-before
+  ///     -left on simultaneous arrival). In practice that's the oncoming car the
+  ///     arbiter released: a non-priority car is stopped at its line, too slow
+  ///     to be "cut off" anyway, so this gate just makes the rule explicit.
+  void _checkLeftYieldToOncoming(PlayerCar playerCar,
+      {required bool requireRightOfWay}) {
+    if (maneuver != Maneuver.left || _yieldViolationFired) return;
+    if (playerCar.speed <= kStopSpeedThreshold) return; // waiting isn't a fault
+
+    for (final npc in npcs) {
+      if (npc.laneIndex != Heading.south.index || npc.spline == null) continue;
+      if (!_movementStraight(npc.spline!)) continue; // oncoming THROUGH-traffic
+      final z = _zoneOf(Heading.south, worldToLocal(npc.position));
+      if (z != _Zone.approaching && z != _Zone.inBox) continue;
+      if (requireRightOfWay && !(_granted.contains(npc) || z == _Zone.inBox)) {
+        continue; // the oncoming car must actually hold the right of way
+      }
+      final gap = _oncomingGapToPlayer(npc, playerCar);
+      if (gap == null) continue; // player not ahead in the oncoming lane (yet)
+      if (!leftTurnCutsOffOncoming(npc.speed, gap)) continue;
+
+      _yieldViolationFired = true;
+      debugPrint('[INTERSECTION] left-turn fail-to-yield: oncoming '
+          'speed=${npc.speed.toStringAsFixed(0)} gap=${gap.toStringAsFixed(0)}');
+      GameBus.instance.emit(YieldViolationEvent(speedAtLine: playerCar.speed));
+      _playerYieldTargets
+        ..clear()
+        ..add(npc);
+      _markYieldTargets(playerCar); // red "!" on the car you cut off
+      return;
+    }
+  }
+
+  /// Bumper gap from oncoming [npc] to the player when the player is ahead in the
+  /// NPC's lane (mirrors the lead-car geometry), else null — the player isn't in
+  /// front of this oncoming car (so it can't be cut off by it).
+  double? _oncomingGapToPlayer(NpcCar npc, PlayerCar playerCar) {
+    final fwd = Vector2(math.cos(npc.angle), math.sin(npc.angle));
+    final delta = playerCar.position - npc.position;
+    final ahead = delta.dot(fwd);
+    if (ahead < kCarLength * 0.5) return null; // behind / overlapping
+    final lateral = (delta - fwd * ahead).length;
+    if (lateral > kCarWidth * 1.8) return null; // different lane
+    return (ahead - kCarLength).clamp(0.0, double.infinity);
+  }
+
+  /// Whether the player's left turn cuts off an oncoming car: it is moving with
+  /// real speed and the [gapToPlayer] forces it to brake harder than ordinary
+  /// following ever needs (the same forced-hard-brake test the cut-off detector
+  /// uses, single-sourced so the threshold stays consistent). A far/slow car is
+  /// NOT cut off — turning into a genuine gap is legal. Pure → unit-tested. To
+  /// make the fault fire more eagerly, this is the seam for a left-turn-specific
+  /// multiplier (currently shares the cut-off [kReactHardBrakeMultiplier]).
+  @visibleForTesting
+  static bool leftTurnCutsOffOncoming(double oncomingSpeed, double gapToPlayer) {
+    if (oncomingSpeed < kReactMinSpeed) return false;
+    return DriverReactionDetector.isForcedHardBrake(oncomingSpeed, gapToPlayer);
+  }
+
+  // ---------------------------------------------------------------------------
+  // "Don't block the box" — stuck inside the intersection (gridlock)
+  // ---------------------------------------------------------------------------
+
+  /// Seconds the player must sit stuck in the box before it's a fault — a short
+  /// grace so a momentary pause mid-crossing isn't punished.
+  static const double _blockBoxGraceSeconds = 1.5;
+
+  double _blockedBoxTimer = 0.0;
+  bool _blockedBoxFired = false;
+
+  /// True when the player's BODY overlaps the conflict box — sampled at nose,
+  /// centre and tail (like [_playerOnBand]) so a PARTIAL overlap ("not fully in
+  /// it") counts, deliberately separate from the centre-based [_zoneOf] the
+  /// arbitration is tuned on (left untouched).
+  bool _playerOverlapsBox(PlayerCar playerCar) {
+    final fwd = Vector2(math.cos(playerCar.angle), math.sin(playerCar.angle));
+    for (final s in const [kCarLength / 2, 0.0, -kCarLength / 2]) {
+      final p = worldToLocal(playerCar.position + fwd * s);
+      if ((p.x - _cx).abs() <= _halfBox && (p.y - _cy).abs() <= _halfBox) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Whether a stuck car sits right ahead of the player in its lane — so the
+  /// player can't move forward (it's blocked, not yielding). Kept TIGHT — a
+  /// stopped car within ~2 lengths directly ahead — so it stays disjoint from
+  /// the road-block check (which fires only when the forward path is CLEAR for
+  /// [kClearPathAheadDistance]). A pedestrian on the exit is NOT counted here
+  /// (that's the give-way fault's job — don't double-punish).
+  bool _playerExitBlocked(PlayerCar playerCar, List<NpcCar> allNpcs) {
+    final fwd = Vector2(math.cos(playerCar.angle), math.sin(playerCar.angle));
+    for (final npc in allNpcs) {
+      if (npc.speed > kStopSpeedThreshold) continue; // a moving car isn't a block
+      final delta = npc.position - playerCar.position;
+      final ahead = delta.dot(fwd);
+      if (ahead <= 0 || ahead > kCarLength * 2.0) continue; // not right ahead
+      final lateral = (delta - fwd * ahead).length;
+      if (lateral > kCarWidth * 1.5) continue; // different lane
+      return true;
+    }
+    return false;
+  }
+
+  /// "Don't block the box": fault the player for sitting STUCK in the
+  /// intersection — body overlapping the conflict box, stopped, and a stuck car
+  /// right ahead so it can't clear (obstructing cross traffic, NOT a legitimate
+  /// in-box yield, whose exit is clear). A short grace avoids faulting a
+  /// momentary pause; fired once per stuck episode, re-armed the moment the
+  /// player frees up. Control-agnostic (a general intersection rule).
+  void _checkBlockedIntersection(
+      double dt, PlayerCar playerCar, List<NpcCar> allNpcs) {
+    final stuck = playerCar.speed <= kStopSpeedThreshold &&
+        _playerOverlapsBox(playerCar) &&
+        _playerExitBlocked(playerCar, allNpcs);
+    if (!stuck) {
+      _blockedBoxTimer = 0.0;
+      _blockedBoxFired = false;
+      return;
+    }
+    _blockedBoxTimer += dt;
+    if (_blockedBoxTimer >= _blockBoxGraceSeconds && !_blockedBoxFired) {
+      _blockedBoxFired = true;
+      debugPrint('[INTERSECTION] blocked the intersection (stuck in the box)');
+      GameBus.instance.emit(BlockedIntersectionEvent());
+    }
+  }
+
+  /// Whether a vehicle [gapToFarEdge] along its path short of the box's far edge
+  /// CANNOT fully clear it, given the nearest STOPPED car [stoppedLeadGap] ahead
+  /// (bumper-to-bumper; null = none). It clears only if that car leaves room for
+  /// its whole body plus a standing gap beyond the far edge — otherwise entering
+  /// would leave it stuck in the box. Pure → the "don't enter unless you can
+  /// clear it" arithmetic is unit-tested.
+  @visibleForTesting
+  static bool cannotClearBox(double gapToFarEdge, double? stoppedLeadGap) {
+    if (stoppedLeadGap == null || gapToFarEdge <= 0) return false;
+    return stoppedLeadGap < gapToFarEdge + kCarLength + kNpcStandingGap;
+  }
+
+  /// Bumper gap to the nearest STOPPED vehicle ahead of [npc] in its lane (an
+  /// NPC or the player), or null when the way ahead is clear of stopped cars.
+  /// Only stopped cars count — a moving lead means traffic is flowing, so the
+  /// gap re-opens as it advances and entering the box is fine.
+  double? _stoppedLeadGap(
+      NpcCar npc, List<NpcCar> allNpcs, PlayerCar playerCar) {
+    final fwd = Vector2(math.cos(npc.angle), math.sin(npc.angle));
+    double? best;
+    void consider(Vector2 pos, double speed) {
+      if (speed > kStopSpeedThreshold) return; // only a stopped car blocks
+      final delta = pos - npc.position;
+      final ahead = delta.dot(fwd);
+      if (ahead < kCarLength * 0.5) return; // behind / overlapping
+      final lateral = (delta - fwd * ahead).length;
+      if (lateral > kCarWidth * 1.8) return; // different lane
+      final gap = (ahead - kCarLength).clamp(0.0, double.infinity);
+      if (best == null || gap < best!) best = gap;
+    }
+
+    for (final o in allNpcs) {
+      if (!identical(o, npc)) consider(o.position, o.speed);
+    }
+    consider(playerCar.position, playerCar.speed);
+    return best;
+  }
+
+  /// Whether a crossing pedestrian stepping onto zebra [band] (−1 = none) must
+  /// hold at the curb for the signal. Pure — the two failure-prone bits are
+  /// unit-tested directly:
+  ///   * the band→road→phase map (an inversion sends peds in front of moving
+  ///     traffic): bands 0 (south) & 1 (north) cross the **N–S** road; 2 (west)
+  ///     & 3 (east) cross the **E–W** road. A ped may step off the curb only
+  ///     once the road it crosses is RED (cars stopped) — exactly the parallel
+  ///     -green walk phase.
+  ///   * **commit & clear**: [alongFromCentre] is the ped's position along its
+  ///     crossing axis relative to the tile centre, [travelSign] the sign of its
+  ///     travel along that axis. Once it has reached the near carriageway edge
+  ///     in its direction of travel (`alongFromCentre·travelSign >= −_halfBox`)
+  ///     it is committed and is NEVER re-held — so a ped that entered on a walk
+  ///     finishes crossing when the light changes, instead of freezing at the
+  ///     far edge of the zebra band (the enter-margin it passes through on the
+  ///     way out used to read as "approaching" again).
+  @visibleForTesting
+  static bool pedMustHoldForSignal(int band, double alongFromCentre,
+      double travelSign, SignalPhase nsPhase, SignalPhase ewPhase) {
+    if (band < 0) return false; // next step isn't onto a crossing
+    final committed = alongFromCentre * travelSign >= -_halfBox;
+    if (committed) return false; // on/past the near edge → finish crossing
+    final crossesNS = band == 0 || band == 1;
+    final crossedRoad = crossesNS ? nsPhase : ewPhase;
+    return crossedRoad != SignalPhase.red; // hold while the crossed road moves
+  }
+
+  @override
+  bool pedestrianHeldBySignal(Vector2 worldPos, Vector2 worldDir) {
+    if (control != IntersectionControl.trafficLight) return false;
+    // Probe in the tile-LOCAL frame — intersections placed downstream of a turn
+    // are rotated, so a raw world probe would gate the wrong crossing.
+    final local = worldToLocal(worldPos);
+    final localDir = directionToLocal(worldDir);
+    final band = _zebraIndexOf(local + localDir * kPedStepProbe); // next step
+    if (band < 0) return false;
+    final crossesNS = band == 0 || band == 1; // which road this crossing spans
+    final along = crossesNS ? local.x - _cx : local.y - _cy;
+    final sign = (crossesNS ? localDir.x : localDir.y).sign;
+    return pedMustHoldForSignal(
+        band, along, sign, _phaseOf(Heading.north), _phaseOf(Heading.east));
   }
 
   /// Sentinel identity for the player in the arrival-order bookkeeping.
@@ -777,13 +1229,14 @@ class IntersectionTile extends TileBase {
   /// Run one frame of all-way-stop arbitration over [samples]; returns the ids
   /// committed to proceed (blocking the box, or released this frame).
   ///
-  /// [pedYielding] are vehicles stopped at their line for a pedestrian (see
-  /// [isPedYieldingAtEntry]); they step out of the right-of-way contest while
-  /// held — they don't block conflicting cross traffic, aren't released
-  /// themselves, and don't outrank the player — but keep their arrival ticket,
-  /// so each reclaims its turn once the pedestrian clears.
+  /// [yieldingAtEntry] are vehicles held at their own line — for a pedestrian on
+  /// their crossing, or because they can't clear the box (anti-gridlock). They
+  /// step out of the right-of-way contest while held: they don't block
+  /// conflicting cross traffic, aren't released themselves, and don't outrank the
+  /// player — but keep their arrival ticket, so each reclaims its turn once the
+  /// hold clears.
   Set<Object> _arbitrateAllWayStop(
-      double dt, List<_VehicleSample> samples, Set<Object> pedYielding) {
+      double dt, List<_VehicleSample> samples, Set<Object> yieldingAtEntry) {
     final present = {for (final v in samples) v.id};
     _ticket.removeWhere((id, _) => !present.contains(id));
     _granted.removeWhere((id) => !present.contains(id));
@@ -808,7 +1261,7 @@ class IntersectionTile extends TileBase {
     // player on and the NPCs have started their turn, a one-frame twitch above
     // the stop threshold (which resets the timer) must not un-demote and let the
     // player's early ticket re-block the cars mid-pull-out. Cleared on the
-    // fresh-approach reset in [_checkPlayerStop].
+    // fresh-approach reset in [_checkPlayerApproach].
     if (_playerHesitationTimer >= _hesitationGoSeconds) _playerDemoted = true;
     final demotePlayer = _playerDemoted;
     // Graceful handoff: once we've waved the player on and let the NPCs take
@@ -837,7 +1290,7 @@ class IntersectionTile extends TileBase {
     // car that has since been released into the box), it re-enters as a normal
     // waiter and is blocked by whatever is now crossing, then released once that
     // clears. Its retained ticket keeps its place in line.
-    _granted.removeWhere(pedYielding.contains);
+    _granted.removeWhere(yieldingAtEntry.contains);
 
     // Ticketing: a car claims its turn (arrival order) once it is at rest *and*
     // frontmost on its own approach — no other car ahead of it that is still
@@ -861,7 +1314,7 @@ class IntersectionTile extends TileBase {
       if (frontmost) {
         final n = _ticketSeq++;
         _ticket[v.id] = n;
-        if (kDebugMode) {
+        if (kDebugMode && DebugState.showDebug) {
           final who = v.id is NpcCar
               ? 'NPC L${(v.id as NpcCar).laneIndex}'
               : 'PLAYER';
@@ -886,7 +1339,7 @@ class IntersectionTile extends TileBase {
         // yielding to a pedestrian at its line (approaching) doesn't block
         // either — the box is free behind it, so cross traffic flows.
         if (!(v.id == _playerId && demotePlayer) &&
-            !pedYielding.contains(v.id) &&
+            !yieldingAtEntry.contains(v.id) &&
             ((zone[v.id] == _Zone.approaching && _granted.contains(v.id)) ||
                 (zone[v.id] == _Zone.inBox &&
                     !_isClearing(v.heading, v.localPos, v.path))))
@@ -904,7 +1357,7 @@ class IntersectionTile extends TileBase {
             // A car yielding to a pedestrian at its line isn't released — it's
             // holding for the crossing, not taking its turn (it keeps its ticket
             // and reclaims its turn once the pedestrian clears).
-            !pedYielding.contains(id) &&
+            !yieldingAtEntry.contains(id) &&
             // A demoted (hesitating) player forfeits its turn — it must not
             // re-win the release with its early ticket and re-block the NPCs.
             !(id == _playerId && demotePlayer))
@@ -949,7 +1402,7 @@ class IntersectionTile extends TileBase {
         if ((_npcWaitTime[v.id] ?? 0.0) < _npcFlashAfterStopSeconds) continue;
         if (zone[v.id] != _Zone.approaching || released.contains(v.id)) continue;
         // A car frozen for a pedestrian won't move, so it can't wave anyone on.
-        if (pedYielding.contains(v.id)) continue;
+        if (yieldingAtEntry.contains(v.id)) continue;
         if (!_movementsConflict(p.heading, p.path, v.heading, v.path)) continue;
         final t = _ticket[v.id] ?? (1 << 30);
         if (t < nextTicket) {
@@ -976,7 +1429,7 @@ class IntersectionTile extends TileBase {
       // over the player — it's yielding to the crossing. Going around it is not
       // a fail-to-yield-to-car (the player can still earn the separate
       // pedestrian give-way fault if it cuts off the ped).
-      if (pedYielding.contains(o.id)) continue;
+      if (yieldingAtEntry.contains(o.id)) continue;
       // A left-turning player may pull into the box and yield to oncoming
       // traffic (the opposite approach, Heading.south) from within — entering
       // isn't a fault. So oncoming cars (whether going straight or turning
@@ -1285,11 +1738,12 @@ class IntersectionTile extends TileBase {
     return null;
   }
 
-  void _checkPlayerStop(
-    PlayerCar playerCar,
-    List<_VehicleSample> samples,
-    List<Pedestrian> pedestrians,
-  ) {
+  /// The player's at-line verdict — shared by both controls. The approach state
+  /// machine (far-south reset, safe-clear pass, the stop-credit tracking and the
+  /// single line-crossing edge) is identical; only what is judged AT the line
+  /// differs: an all-way stop checks for a complete stop + give-way, a traffic
+  /// light checks the phase (crossing on red = ran the light).
+  void _checkPlayerApproach(PlayerCar playerCar) {
     final playerLocal = worldToLocal(playerCar.position);
     final localY = playerLocal.y;
 
@@ -1351,21 +1805,35 @@ class IntersectionTile extends TileBase {
       _stopLineCrossed = true;
       scenario.onPlayerPassedYieldLine(playerCar.speed);
 
-      if (!_cameToStop && !_playerViolationFired) {
-        _playerViolationFired = true;
-        debugPrint('[INTERSECTION] stop-sign violation @ line: '
-            'minSpeed=${_minApproachSpeed.toStringAsFixed(0)}');
-        GameBus.instance.emit(
-            StopSignViolationEvent(minSpeedObserved: _minApproachSpeed));
-      }
+      if (control == IntersectionControl.trafficLight) {
+        // Crossing the stop line on a solid red = ran the light. Yellow is still
+        // legal to proceed (no dilemma-zone grading); green is clean. A car that
+        // entered on green and is caught in the box by the change isn't faulted —
+        // the verdict is taken once, here, at the line.
+        if (_phaseOf(Heading.north) == SignalPhase.red &&
+            !_playerViolationFired) {
+          _playerViolationFired = true;
+          debugPrint('[INTERSECTION] red-light violation @ line: '
+              'speed=${playerCar.speed.toStringAsFixed(0)}');
+          GameBus.instance.emit(RedLightViolationEvent());
+        }
+      } else {
+        if (!_cameToStop && !_playerViolationFired) {
+          _playerViolationFired = true;
+          debugPrint('[INTERSECTION] stop-sign violation @ line: '
+              'minSpeed=${_minApproachSpeed.toStringAsFixed(0)}');
+          GameBus.instance.emit(
+              StopSignViolationEvent(minSpeedObserved: _minApproachSpeed));
+        }
 
-      if (_playerShouldYield && !_playerReleased && !_yieldViolationFired) {
-        _yieldViolationFired = true;
-        debugPrint('[INTERSECTION] fail-to-yield @ line: '
-            'speed=${playerCar.speed.toStringAsFixed(0)}');
-        GameBus.instance
-            .emit(YieldViolationEvent(speedAtLine: playerCar.speed));
-        _markYieldTargets(playerCar);
+        if (_playerShouldYield && !_playerReleased && !_yieldViolationFired) {
+          _yieldViolationFired = true;
+          debugPrint('[INTERSECTION] fail-to-yield @ line: '
+              'speed=${playerCar.speed.toStringAsFixed(0)}');
+          GameBus.instance
+              .emit(YieldViolationEvent(speedAtLine: playerCar.speed));
+          _markYieldTargets(playerCar);
+        }
       }
     }
   }
@@ -1377,11 +1845,11 @@ class IntersectionTile extends TileBase {
   final Set<Pedestrian> _gaveWayFaulted = {};
 
   /// Failed-to-give-way to a crossing pedestrian — logged INDEPENDENTLY of the
-  /// stop-sign approach state machine in [_checkPlayerStop]. The crossings sit
+  /// stop-sign approach state machine in [_checkPlayerApproach]. The crossings sit
   /// OUTSIDE the conflict box (all four approaches: the zebra bands span ~120–156
   /// from centre, the box edge is at [_halfBox]=80), so every EXIT crossing of a
   /// turn/straight maneuver happens after [_playerExitedBox] is already true.
-  /// [_checkPlayerStop] early-returns there (correctly, for the stop line), which
+  /// [_checkPlayerApproach] early-returns there (correctly, for the stop line), which
   /// silently dropped every exit-crossing fault — the bug where the startle "!"
   /// popped (TileManager, global) but nothing reached the faults log. So this runs
   /// every frame instead: [_playerCuttingOffPed] is already scoped to this tile's
@@ -1451,11 +1919,15 @@ class IntersectionTile extends TileBase {
     _drawMarkings(canvas);
     _drawStopLines(canvas);
     _drawCrosswalks(canvas); // urban zebras (no-op interurban)
-    if (kDebugMode) _drawZebraDebug(canvas); // detection box overlay
+    if (kDebugMode && DebugState.showDebug) _drawZebraDebug(canvas); // detection box overlay
     drawDecorations(canvas); // grass-corner scenery
-    _drawStopSigns(canvas);
+    if (control == IntersectionControl.trafficLight) {
+      _drawSignalHeads(canvas); // cycling lights instead of STOP signs
+    } else {
+      _drawStopSigns(canvas);
+    }
     debugRenderSplines(canvas);
-    if (kDebugMode) _drawDebugTurns(canvas);
+    if (kDebugMode && DebugState.showDebug) _drawDebugTurns(canvas);
   }
 
   /// Player's tile-local position, cached each frame for the debug overlay.
@@ -1633,6 +2105,75 @@ class IntersectionTile extends TileBase {
     ),
     textDirection: TextDirection.ltr,
   )..layout();
+
+  // ---------------------------------------------------------------------------
+  // Traffic-light signal heads (traffic-light control only)
+  // ---------------------------------------------------------------------------
+
+  static const double _signalLampRadius = 8.0;
+
+  /// One signal head per approach, on the near-side curb to the right of the
+  /// approaching lane, each showing that approach's live phase.
+  void _drawSignalHeads(Canvas canvas) {
+    _drawSignalHeadFor(canvas, const Offset(0, -1), _phaseOf(Heading.north));
+    _drawSignalHeadFor(canvas, const Offset(0, 1), _phaseOf(Heading.south));
+    _drawSignalHeadFor(canvas, const Offset(1, 0), _phaseOf(Heading.east));
+    _drawSignalHeadFor(canvas, const Offset(-1, 0), _phaseOf(Heading.west));
+  }
+
+  /// Places and orients one head for traffic travelling along [travel]: just
+  /// before the stop line (near-side), out on the curb right of the lane.
+  void _drawSignalHeadFor(Canvas canvas, Offset travel, SignalPhase phase) {
+    final right = Offset(-travel.dy, travel.dx);
+    final back = _halfBox + _stopLineGap + _signSetback;
+    const outward = _halfBox + 14.0; // on the pavement, right of the lane
+    final center = const Offset(_cx, _cy) - travel * back + right * outward;
+    final angle = math.atan2(travel.dx, -travel.dy);
+    _drawSignalHead(canvas, center, angle, phase);
+  }
+
+  void _drawSignalHead(
+      Canvas canvas, Offset center, double angle, SignalPhase phase) {
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+
+    final housing = RRect.fromRectAndRadius(
+        const Rect.fromLTRB(-13, -30, 13, 30), const Radius.circular(6));
+    canvas.drawRRect(housing, Paint()..color = const Color(0xFF202225));
+    canvas.drawRRect(
+        housing,
+        Paint()
+          ..color = const Color(0xFF0A0A0B)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2);
+
+    // Red toward the box, green nearest the driver — colour is what reads.
+    _drawLamp(canvas, const Offset(0, -18), phase == SignalPhase.red,
+        on: const Color(0xFFFF1744),
+        glow: const Color(0x55FF1744),
+        off: const Color(0xFF3A1417));
+    _drawLamp(canvas, const Offset(0, 0), phase == SignalPhase.yellow,
+        on: const Color(0xFFFFC400),
+        glow: const Color(0x55FFC400),
+        off: const Color(0xFF3A3211));
+    _drawLamp(canvas, const Offset(0, 18), phase == SignalPhase.green,
+        on: const Color(0xFF00E676),
+        glow: const Color(0x5500E676),
+        off: const Color(0xFF123A22));
+
+    canvas.restore();
+  }
+
+  void _drawLamp(Canvas canvas, Offset at, bool lit,
+      {required Color on, required Color glow, required Color off}) {
+    if (lit) {
+      canvas.drawCircle(
+          at, _signalLampRadius + 5, Paint()..color = glow);
+    }
+    canvas.drawCircle(
+        at, _signalLampRadius, Paint()..color = lit ? on : off);
+  }
 
   void _drawGround(Canvas canvas) {
     canvas.drawRect(
