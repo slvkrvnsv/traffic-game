@@ -262,9 +262,13 @@ const double kWheelSpeedFloor = 120.0;
 /// rebases by a full lane, so exactly 0.5 would land on the opposite threshold
 /// and ping-pong. 0.6 gives a clear hysteresis band.
 const double kLaneCommitFraction = 0.6;
-/// How far past an edge lane the car may lean (fraction of a lane) when there
-/// is no further lane to commit to — gives a soft "nothing there" feel.
-const double kLaneEdgePullFraction = 0.4;
+/// Lean (world units) of the universal "intention" cue: a held drag with no lane
+/// to merge into that way nudges the car this slightly toward the side it's
+/// leaning — a hint of intention (e.g. the turn it will pick at the next fork
+/// node), NOT a drift toward the centreline (the old full edge-pull, ~32u, looked
+/// like crossing into the opposite lane). This is the edge-pull cap on EVERY tile
+/// now, so the lean feels the same everywhere. A feel knob.
+const double kIntentionLean = 12.0;
 /// Minimum real separation (world units) between the current lane and an
 /// adjacent one before a discrete lane-change *commit* is allowed. The car may
 /// still lean toward a closer lane, but no commit (and its haptic) fires until

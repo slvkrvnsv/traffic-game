@@ -101,8 +101,11 @@ class PlayerCar extends CarBase {
   // ---------------------------------------------------------------------------
 
   /// World point of [lane] (centreline, no offset) at the player's progress.
-  Vector2 _laneWorldPoint(Spline lane) {
-    final local = lane.evaluate(currentT);
+  Vector2 _laneWorldPoint(Spline lane) => _laneWorldPointAtT(lane, currentT);
+
+  /// World point of [lane] (centreline, no offset) at an explicit progress [t].
+  Vector2 _laneWorldPointAtT(Spline lane, double t) {
+    final local = lane.evaluate(t);
     final cosA = math.cos(_laneTileAngle);
     final sinA = math.sin(_laneTileAngle);
     return Vector2(
@@ -121,14 +124,15 @@ class PlayerCar extends CarBase {
   /// player drags afresh.
   bool _steerConsumed = false;
 
-  /// Fork spline-steer targets for the current position (set per-frame by
-  /// TileManager from [TileBase.splineSteerTargetAt]): the spline a left/right
-  /// drag switches onto where two lanes are still near-coincident but splitting
-  /// (a widen fork). Non-null ⇒ the car is in a fork and uses spline-steering.
+  /// One-shot fork spline-steer targets for the current position (set per-frame by
+  /// TileManager from [TileBase.splineSteerTargetAt]): the spline a left/right drag
+  /// switches onto where two lanes are still near-coincident but splitting/merging
+  /// — the lane-transition connector's merge. (Junctions no longer use this; they
+  /// fork at a discrete node via [commitFork], driven by TileManager.)
   Spline? _forkLeft;
   Spline? _forkRight;
 
-  /// Per-frame fork targets from the active tile (see [_forkLeft]/[_forkRight]).
+  /// Per-frame one-shot fork targets from the active tile (connector merge).
   void setForkTargets(Spline? left, Spline? right) {
     _forkLeft = left;
     _forkRight = right;
@@ -142,14 +146,18 @@ class PlayerCar extends CarBase {
     // instead of being shoved further. Lifting the finger re-arms it.
     if (!input.laneSteerActive) _steerConsumed = false;
 
-    // Fork (a widen lane just splitting off — TileManager set the targets):
-    // spline-steer. A drag switches WHICH spline we follow (seamless — the lanes
-    // are near-coincident) and the offset then self-centres onto it. The
-    // offset-based lean is skipped here entirely: it jumps as the edge-pull cap
-    // collapses to the opening lane's separation, and wobbles because each
-    // cap-clamp resets the nose. The spline's own geometry carries the car over.
     final inFork = _forkLeft != null || _forkRight != null;
-    if (inFork && _laneChangeAllowed && !_steerConsumed && input.laneSteerActive) {
+
+    if (inFork &&
+        _laneChangeAllowed &&
+        !_steerConsumed &&
+        input.laneSteerActive) {
+      // One-shot fork (lane-transition connector): a drag switches WHICH spline we
+      // follow (seamless — the lanes are near-coincident) and the offset
+      // self-centres onto it. The offset-based lean is skipped (see [blockOffset])
+      // so the cap, which collapses to the converging lane's separation, can't
+      // wobble. (Junction forks are handled at a discrete node by TileManager via
+      // [commitFork], not here.)
       final px = input.laneSteerPx;
       final target = px > kLaneSteerDeadzone
           ? _forkRight
@@ -160,14 +168,21 @@ class PlayerCar extends CarBase {
       }
     }
 
-    // [_laneChangeAllowed] is set per-frame by TileManager from the tile's
-    // positional rule (TileBase.allowsLaneChangeAt). When steering is off
-    // (released, consumed, tile-disabled, or in a fork) the car runs the
-    // slew-limited self-centre onto its current lane.
+    // The offset lean/merge runs for ordinary roads and junctions: a drag toward a
+    // parallel lane merges; a drag with no lane that way leans ≤[kIntentionLean] to
+    // show intention (the side the next fork node will pick). Skipped only for the
+    // connector's one-shot fork ([blockOffset]). A merge commit sets [_steerConsumed]
+    // so one drag = one decisive lane change (the car then settles on the new lane,
+    // not edge-pulling past it). Holding the finger THROUGH a merge therefore stops
+    // showing a visible lean — but the fork still picks correctly: [leanSign] falls
+    // back to the live drag direction when the offset has settled, so "keep dragging
+    // right after I merged → I go right" holds at the node without re-arming the lean
+    // (re-arming reintroduced the connector's nose-snap wobble).
+    final blockOffset = inFork;
     final steerActive = input.laneSteerActive &&
         _laneChangeAllowed &&
-        !_steerConsumed &&
-        !inFork;
+        !blockOffset &&
+        !_steerConsumed;
 
     // 1. Target nose angle + how fast the nose may turn toward it. Turn-in is
     //    crisp; the self-centring return is deliberately lazier (safe abort).
@@ -231,15 +246,24 @@ class PlayerCar extends CarBase {
     //    unreachable until it happens to be a full lane away. For ordinary
     //    parallel lanes the separation is exactly kLaneWidth, so this is
     //    identical to the old behaviour there.
-    // Skipped in a fork: there the spline-switch is the lane change, and a cap
-    // clamp here would reset the nose every frame as the lane's separation
-    // drifts — that per-frame reset is exactly the fork wobble.
+    // Skipped only in the merge tile's one-shot fork ([blockOffset]): there the
+    // spline-switch is the lane change, and a cap clamp would reset the nose every
+    // frame as the converging lane's separation drifts — that per-frame reset is
+    // the fork wobble. In a LIVE intention fork the cap stays: at the armed edge
+    // lane there is no adjacent lane that way, so the cap is the fixed edge-pull
+    // (it can't collapse) and it's exactly what gives the slight intention lean.
     final sepRight = _adjacentSeparation(1);
     final sepLeft = _adjacentSeparation(-1);
-    final maxRight = sepRight ?? kLaneWidth * kLaneEdgePullFraction;
-    final maxLeft = sepLeft ?? kLaneWidth * kLaneEdgePullFraction;
+    // A drag with no lane to merge into that way is the intention cue: cap it at a
+    // SLIGHT lean ([kIntentionLean], universal on every tile now), not a full
+    // edge-pull, so the car only hints toward the side it's leaning instead of
+    // drifting toward the centreline. When a lane IS there, the separation cap
+    // merges as normal.
+    const edgeCap = kIntentionLean;
+    final maxRight = sepRight ?? edgeCap;
+    final maxLeft = sepLeft ?? edgeCap;
     final capped = lateralOffset.clamp(-maxLeft, maxRight);
-    if (!inFork && capped != lateralOffset) {
+    if (!blockOffset && capped != lateralOffset) {
       lateralOffset = capped;
       _heading = 0.0;
     }
@@ -291,25 +315,105 @@ class PlayerCar extends CarBase {
         : null;
   }
 
+  /// The point on [lane] NEAREST the player's current centre: its progress [t] and
+  /// the signed lateral offset (perp·(lanePoint − me); + = right of travel). Returns
+  /// null when the nearest point is an endpoint — i.e. the player is past [lane]'s
+  /// extent, so it isn't laterally adjacent here (no merge target). Using the
+  /// nearest point (not the same fraction) keeps a lane change position-continuous
+  /// even when the lanes DON'T start at the same depth — e.g. the intersection's
+  /// two through lanes after the per-lane fork, or any future staggered lanes. For
+  /// ordinary equal-length parallel lanes the nearest point is at the same fraction,
+  /// so this is identical to the old behaviour.
+  ({double t, double lateral})? _nearestLateral(Spline lane) {
+    final cur = spline;
+    if (cur == null) return null;
+    final me = _laneWorldPoint(cur);
+    double d2at(double t) => (_laneWorldPointAtT(lane, t) - me).length2;
+    // Coarse nearest sample, then refine (ternary search on the smooth distance)
+    // so the switch point is the EXACT nearest — a quantised sample would land the
+    // car a few px off the lane and read as a jump on an ordinary lane change.
+    double bt = 0.0, bd = double.infinity;
+    const n = 24;
+    for (int i = 0; i <= n; i++) {
+      final t = i / n;
+      final d2 = d2at(t);
+      if (d2 < bd) {
+        bd = d2;
+        bt = t;
+      }
+    }
+    if (bt <= 0.0 || bt >= 1.0) return null; // nearest is an endpoint → past the lane
+    double lo = (bt - 1.0 / n).clamp(0.0, 1.0);
+    double hi = (bt + 1.0 / n).clamp(0.0, 1.0);
+    for (int k = 0; k < 12; k++) {
+      final m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+      if (d2at(m1) < d2at(m2)) {
+        hi = m2;
+      } else {
+        lo = m1;
+      }
+    }
+    bt = (lo + hi) / 2;
+    final a = splineAngle;
+    final perp = Vector2(-math.sin(a), math.cos(a));
+    return (t: bt, lateral: (_laneWorldPointAtT(lane, bt) - me).dot(perp));
+  }
+
   /// Separation (world units) to the nearest lane on [direction] (+1 right / -1
-  /// left) of the current lane, or null if there is none. The lane-change cap
-  /// and commit use this so a merging/diverging lane (variable spacing) is
-  /// handled the same as parallel lanes — where it simply equals [kLaneWidth].
+  /// left) of the current lane, or null if there is none. The lane-change cap and
+  /// commit use this so a merging/diverging/staggered lane is handled the same as
+  /// parallel lanes — where it simply equals [kLaneWidth].
   double? _adjacentSeparation(int direction) {
     final current = spline;
     if (current == null || _laneOptions.length < 2) return null;
-    final centre = _laneWorldPoint(current);
-    final a = splineAngle;
-    final perp = Vector2(-math.sin(a), math.cos(a));
     double? best;
     for (final lane in _laneOptions) {
       if (identical(lane, current)) continue;
-      final proj = (_laneWorldPoint(lane) - centre).dot(perp);
-      if (proj * direction <= 1.0) continue; // not on this side (or too close)
-      final sep = proj.abs();
+      final n = _nearestLateral(lane);
+      if (n == null) continue;
+      if (n.lateral * direction <= 1.0) continue; // not on this side (or too close)
+      final sep = n.lateral.abs();
       if (best == null || sep < best) best = sep;
     }
     return best;
+  }
+
+  /// The player's current lateral intention: -1 (holding left), +1 (right), 0
+  /// (neutral). Used by TileManager to pick the branch at a junction fork node.
+  /// Reads ONLY the live finger — NOT the residual lean — so a release just before
+  /// the node goes straight immediately ("leave and you go straight, attach to the
+  /// straight spline right away"). The cosmetic lean eases back lazily, so reading it
+  /// would still turn for a few tenths of a second after release; the finger is the
+  /// faithful signal. A held-through drag and a merge-then-hold both still pick the
+  /// turn (the finger is down at the node either way).
+  int get leanSign {
+    final input = InputState.instance;
+    if (!input.laneSteerActive) return 0;
+    if (input.laneSteerPx < -kLaneSteerDeadzone) return -1;
+    if (input.laneSteerPx > kLaneSteerDeadzone) return 1;
+    return 0;
+  }
+
+  /// Commit a JUNCTION fork onto [branch] (chosen by TileManager from the lean):
+  /// [branch] starts exactly where the current spline ends (coincident node), so
+  /// starting it at distance 0 keeps the world position continuous — the lean
+  /// ([lateralOffset]) carries straight through. Reset the lane set to [laneOptions]
+  /// (the branch's siblings) and click. No offset rebase — that's the whole point of
+  /// the discrete node (versus the old mid-approach switch that fought the cap).
+  void commitFork(
+    Spline branch,
+    List<Spline> laneOptions,
+    Vector2 tileOffset,
+    double tileAngle, {
+    bool haptic = true,
+  }) {
+    assignSpline(branch,
+        startDistance: 0.0, worldOffset: tileOffset, worldAngle: tileAngle);
+    setLaneOptions(laneOptions, tileOffset, tileAngle, allowLaneChange: true);
+    _steerConsumed = false;
+    // Click only when the fork is a TURN (or a merge, handled in _commitToAdjacent):
+    // sliding straight through a junction shouldn't buzz.
+    if (haptic) HapticFeedback.selectionClick();
   }
 
   /// Spline-steer onto [target]: switch the followed spline while keeping the
@@ -321,10 +425,23 @@ class PlayerCar extends CarBase {
     if (current == null) return;
     final a = splineAngle;
     final perp = Vector2(-math.sin(a), math.cos(a));
-    final sep = (_laneWorldPoint(target) - _laneWorldPoint(current)).dot(perp);
+    // Preserve ARC LENGTH, not fraction. The branches of a turn fork share a
+    // common prefix (the approach) but can differ in total length — a turn branch
+    // is longer than its straight. Matching distanceTravelled keeps the car at the
+    // same physical point on the shared prefix; switching by fraction
+    // (currentT × targetLen) would jump it forward onto the longer branch (~89u
+    // for the light intersection's left fork). The merge/widen fork's two lanes
+    // differ by <6u in length (a gentle taper), so this barely moves its switch
+    // point — if anything it's slightly more continuous, since the old
+    // fraction-based switch had a ~5u forward jump the arc-length one removes.
+    final d = distanceTravelled;
+    final tTarget =
+        target.totalLength <= 0 ? 0.0 : (d / target.totalLength).clamp(0.0, 1.0);
+    final sep = (_laneWorldPointAtT(target, tTarget) - _laneWorldPoint(current))
+        .dot(perp);
     assignSpline(
       target,
-      startDistance: currentT * target.totalLength,
+      startDistance: d,
       worldOffset: _laneTileOffset,
       worldAngle: _laneTileAngle,
     );
@@ -339,26 +456,25 @@ class PlayerCar extends CarBase {
     final current = spline;
     if (current == null || _laneOptions.length < 2) return false;
 
-    final centre = _laneWorldPoint(current); // current lane centreline
-    final a = splineAngle;
-    final perp = Vector2(-math.sin(a), math.cos(a));
-
     Spline? best;
-    double bestProj = double.infinity;
+    double bestSep = double.infinity;
+    double bestT = 0.0;
     for (final lane in _laneOptions) {
       if (identical(lane, current)) continue;
-      final proj = (_laneWorldPoint(lane) - centre).dot(perp);
-      if (proj * direction <= 1.0) continue; // wrong side
-      if (proj.abs() < bestProj) {
-        bestProj = proj.abs();
+      final n = _nearestLateral(lane);
+      if (n == null) continue;
+      if (n.lateral * direction <= 1.0) continue; // wrong side
+      if (n.lateral.abs() < bestSep) {
+        bestSep = n.lateral.abs();
         best = lane;
+        bestT = n.t; // switch at the nearest point → same world position, any geometry
       }
     }
     if (best == null) return false;
 
     assignSpline(
       best,
-      startDistance: currentT * best.totalLength,
+      startDistance: bestT * best.totalLength,
       worldOffset: _laneTileOffset,
       worldAngle: _laneTileAngle,
     );

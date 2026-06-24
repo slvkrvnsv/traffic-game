@@ -39,10 +39,17 @@ enum _Heading { north, east, south, west }
 /// (late-bound from the player's entry lane in [bindPlayerEntry]) so the player
 /// always has to move to the legal lane for it — left from the inner
 /// (centre-side) lane, straight/right from the outer (curb) lane (L1 layout:
-/// inner = left-only ◄, outer = through+right ▲►). Steering is ON during the
-/// approach, OFF inside the box (no swerve-cheating), ON again on the exit. The
-/// route always completes the commanded maneuver from whichever lane the player
-/// is in at the box; being in the wrong lane is a logged fault, not a re-route.
+/// inner = left-only ◄, outer = through+right ▲►).
+///
+/// The TURN is chosen with the wheel via TURN TAPS on a continuous spine: the player
+/// follows ONE whole through-lane spline per lane (entry to exit), and the turns hang
+/// on it as branches ([playerBranches], resolved per-frame by TileManager); crossing a
+/// tap while leaning toward it diverts onto that turn (the branch starts ON the spine,
+/// so the switch is position-continuous); crossing it neutral stays straight on the
+/// spine. Inner lane carries the left turns, outer the right turns (merge-first). Near
+/// and far are just two taps at two depths. Because the spine is never chopped, the
+/// corridor merge ([playerLaneMates]) never hits a seam. Steering (the kIntentionLean
+/// lean) is ALWAYS on; the box is purely a rules region.
 class IntersectionLightTile extends TileBase {
   IntersectionLightTile({
     super.locale,
@@ -63,6 +70,17 @@ class IntersectionLightTile extends TileBase {
   /// cold bootstrap, which legally requires the outer lane → straight/right).
   Maneuver _maneuver = Maneuver.straight;
   bool _maneuverBound = false;
+
+  /// The exit the player ACTUALLY takes — the branch they committed to at the box
+  /// mouth with the wheel (the wheel wins: you can turn from any lane). Drives
+  /// [exitAnchor]/[exitDirection] — where the next tile is placed — so it is
+  /// finalised at the gate (see [_checkPlayerApproach]), not at the command. The
+  /// anchor always uses the CANONICAL (inner) lane position so the receiving road
+  /// stays fixed regardless of which lane the player exits from — a lane-matched
+  /// anchor would shift the whole next tile sideways (swinging its oncoming lanes
+  /// over the seam). Exiting off the canonical lane just lands the car a lane over
+  /// on the next tile, which is continuous; it self-corrects with normal steering.
+  Maneuver _committedExit = Maneuver.straight;
 
   @override
   Maneuver? get commandedManeuver => _maneuver;
@@ -210,9 +228,11 @@ class IntersectionLightTile extends TileBase {
       (h == _Heading.north || h == _Heading.south) ? _cy : _cx;
 
   /// Quarter-arc points from [fromPt] to [toPt] about [centre] (radius
-  /// |fromPt−centre|), the short (~90°) way.
+  /// |fromPt−centre|), the short (~90°) way. 12 steps (not 8) so a branch rooted at
+  /// the box mouth — where the arc is tangent to north — has its first sampled step
+  /// close enough to north that the player-fork join has no perceptible kink.
   static List<Vector2> _arcBetween(Vector2 centre, Vector2 fromPt, Vector2 toPt,
-      [int steps = 8]) {
+      [int steps = 12]) {
     final r = (fromPt - centre).length;
     final a1 = math.atan2(fromPt.y - centre.y, fromPt.x - centre.x);
     final a2 = math.atan2(toPt.y - centre.y, toPt.x - centre.x);
@@ -281,29 +301,152 @@ class IntersectionLightTile extends TileBase {
     }
   }
 
-  /// Player paths for the commanded maneuver: index 0 = inner lane, 1 = outer.
-  /// Built lazily, AFTER [_maneuver] is bound (see [bindPlayerEntry]).
-  // Built lazily but REBUILT when the maneuver binds (see [bindPlayerEntry]).
-  // A plain `late final` would freeze with the default maneuver if anything reads
-  // it before the bind — e.g. the debug spline overlay renders the tile a frame
-  // or two before the player hands off onto it, which would lock the player path
-  // to "straight" even when the bound task is a left turn.
-  List<Spline>? _playerPaths;
+  // ---------------------------------------------------------------------------
+  // Player route — a CHAIN of fork nodes per lane. Each lane offers a NEAR turn
+  // (early/shallow) and a FAR turn (late/deep): "turn now → the near exit lane;
+  // roll a touch deeper and turn → the far exit lane" — the spline is king, your
+  // position picks the lane. Built from [_turn] (a corner-rounding arc) which
+  // reproduces the old inner-left / outer-right exactly; aim it at the OTHER exit
+  // lane and you get the far turns for free. (NPCs still use [_movement].)
+  // ---------------------------------------------------------------------------
+  static const double _leftR = kLaneWidth; // 80 — left corner radius (old inner-left)
+  static const double _rightR = kLaneWidth * 0.5; // 40 — right radius (old outer-right)
+
+  /// Corner-rounding turn: come up lane [x] heading NORTH, round the corner at radius
+  /// [r] into the exit lane at local y=[exitY] ([dir] −1 = left/west, +1 = right/east),
+  /// then run to the tile edge. The node (start) is (x, exitY+r), tangent north, so it
+  /// joins the straight above it without a kink. `_turn(640,780,-1,80)` reproduces the
+  /// old inner-left; `_turn(720,940,1,40)` the old outer-right.
+  static List<Vector2> _turn(double x, double exitY, int dir, double r) {
+    final node = Vector2(x, exitY + r);
+    final centre = Vector2(x + dir * r, exitY + r);
+    final arcEnd = Vector2(x + dir * r, exitY);
+    final edge = dir < 0 ? 0.0 : _w;
+    return [
+      ..._arcBetween(centre, node, arcEnd),
+      Vector2((arcEnd.x + edge) / 2, exitY),
+      Vector2(edge, exitY),
+    ];
+  }
+
+  static List<Vector2> _straightPts(double x, double fromY, double toY) =>
+      [Vector2(x, fromY), Vector2(x, (fromY + toY) / 2), Vector2(x, toY)];
+
+  // Exit lanes (local y): west-bound inner 780 / outer 700; east-bound inner 860 /
+  // outer 940. The fork-node depth for a turn is exitY + r (so the arc is tangent
+  // north there) — that's why the NEAR turn forks shallow and the FAR turn deep.
+  static const double _wInner = _cy - _innerOff; // 780
+  static const double _wOuter = _cy - _outerOff; // 700
+  static const double _eInner = _cy + _innerOff; // 860
+  static const double _eOuter = _cy + _outerOff; // 940
+
+  // INNER lane SPINE (x=640): ONE continuous straight, tile entry (y=1640) → exit
+  // (y=0). The two LEFT turns TAP onto it — near-left at y=860, far-left at y=780
+  // (the exact points the old stub-ends sat at, so the turn fires identically). The
+  // spine is whole, so the corridor merge never hits a seam.
+  late final Spline _innerThrough = Spline(_straightPts(_cx + _innerOff, _h, 0));
+  late final Spline _nearLeft = Spline(_turn(_cx + _innerOff, _wInner, -1, _leftR));
+  late final Spline _farLeft = Spline(_turn(_cx + _innerOff, _wOuter, -1, _leftR));
+
+  // OUTER lane SPINE (x=720): ONE continuous straight. The two RIGHT turns tap on —
+  // near-right at y=980, far-right at y=900.
+  late final Spline _outerThrough = Spline(_straightPts(_cx + _outerOff, _h, 0));
+  late final Spline _nearRight = Spline(_turn(_cx + _outerOff, _eOuter, 1, _rightR));
+  late final Spline _farRight = Spline(_turn(_cx + _outerOff, _eInner, 1, _rightR));
+
+  /// Lane-mate groups for the magnetic merge — the lanes you may SLIDE between
+  /// because they run side-by-side. The big one is the STRAIGHT CORRIDOR: BOTH lane
+  /// spines, each ONE continuous spline the whole tile height (x=640 / 720). Because
+  /// they're whole (not chopped into approach/mid/through stubs), the merge search
+  /// always sees a continuous neighbour — no seam, no dead-band, no jump. Hanging a
+  /// turn on a spine doesn't switch off merging into it; the spine keeps running.
+  /// Merge in time → you reach the outer spine before its near tap (you can take its
+  /// near turn); merge late → you've passed that tap (only its later turn, or
+  /// straight). Past a TURN you're on the W/E exit pair instead.
+  late final List<List<Spline>> _exitGroups = [
+    [_innerThrough, _outerThrough], // the straight corridor — whole spines
+    [_nearLeft, _farLeft], // west-bound exit lanes
+    [_nearRight, _farRight], // east-bound exit lanes
+  ];
+
+  late final List<Spline> _playerPaths = [_innerThrough, _outerThrough];
 
   @override
-  List<Spline> get playerPaths => _playerPaths ??= _buildPlayerPaths();
+  List<Spline> get playerPaths => _playerPaths;
 
-  List<Spline> _buildPlayerPaths() => [
-        Spline(_movement(_Heading.north, _innerOff, _maneuver)),
-        Spline(_movement(_Heading.north, _outerOff, _maneuver)),
-      ];
+  /// TURN TAPS: each spine carries a NEAR turn (early) and a FAR turn (late), hung on
+  /// at two depths. Cross a tap leaning toward it → take that turn; cross it neutral →
+  /// stay straight on the spine; lean later → the next tap. Near and far are the same
+  /// kind of thing — just two turns at two points, nothing special. Merge-first still
+  /// holds geometrically: left turns hang on the inner spine, right turns on the outer,
+  /// so you must be on the matching spine (merge there first) to take that turn.
+  @override
+  List<Spline> playerBranches(Spline spine) {
+    if (identical(spine, _innerThrough)) return [_nearLeft, _farLeft];
+    if (identical(spine, _outerThrough)) return [_nearRight, _farRight];
+    return const [];
+  }
 
-  /// The lane index (0 inner / 1 outer) that is LEGAL for the commanded maneuver:
-  /// left needs the inner (centre-side) lane, straight/right the outer lane.
+  /// Lane-mates for merging, following the spline network: the two through-lane spines
+  /// are mates the whole height (the corridor); PAST a turn the exit-lane group
+  /// ([_exitGroups]) — the two west-bound lanes or the two east-bound lanes — so the
+  /// magnetic merge keeps working after the turn (the spline is king), until hand-off.
+  @override
+  List<Spline> playerLaneMates(Spline current) {
+    for (final g in _exitGroups) {
+      if (g.any((s) => identical(s, current))) return g;
+    }
+    return [current];
+  }
+
+  /// Test seam: every player turn spline that actually exists (4). "Straight" is no
+  /// longer a spline — it's just staying on a through-lane spine.
+  @visibleForTesting
+  List<Spline> get playerBranchSplines => [_nearLeft, _farLeft, _nearRight, _farRight];
+
+  /// Debug overlay: every turn branch (the through spines are drawn via playerPaths).
+  @override
+  List<Spline> get debugExtraSplines =>
+      [_nearLeft, _farLeft, _nearRight, _farRight];
+
+  /// Test seam: the NEAR turn for a lane+maneuver, or — for straight — the through
+  /// spine itself (straight is no longer a branch, it's staying on the spine). The
+  /// FAR turns come from [farBranch].
+  @visibleForTesting
+  Spline branch({required bool inner, required Maneuver m}) => inner
+      ? (m == Maneuver.left ? _nearLeft : _innerThrough)
+      : (m == Maneuver.right ? _nearRight : _outerThrough);
+
+  /// Test seam: the FAR (late, other-exit-lane) turn for [m] (left or right).
+  @visibleForTesting
+  Spline farBranch({required Maneuver m}) =>
+      m == Maneuver.left ? _farLeft : _farRight;
+
+  /// Test seam: the through-lane spine for a given lane.
+  @visibleForTesting
+  Spline approach({required bool inner}) =>
+      inner ? _innerThrough : _outerThrough;
+
+  /// The exit DIRECTION committed by [s] — both the near and far turns of a side share
+  /// it (the lane you land in doesn't change which way the corridor bends). A through
+  /// spine is straight. Drives the late exit re-placement; with the discrete tap it
+  /// flips at most once — when the player diverts onto a turn (until then they're on a
+  /// straight spine, so it stays Maneuver.straight and nothing churns).
+  Maneuver? _exitManeuver(Spline? s) {
+    if (s == null) return null;
+    if (identical(s, _nearLeft) || identical(s, _farLeft)) return Maneuver.left;
+    if (identical(s, _nearRight) || identical(s, _farRight)) return Maneuver.right;
+    if (identical(s, _innerThrough) || identical(s, _outerThrough)) {
+      return Maneuver.straight;
+    }
+    return null;
+  }
+
+  /// Which lane is LEGAL for a maneuver: left needs the inner (centre-side) lane,
+  /// straight/right the outer (curb) lane. (Merge-first already enforces this in
+  /// practice; kept for grading/tests.)
   static bool laneIsLegal({required bool inner, required Maneuver m}) =>
       m == Maneuver.left ? inner : !inner;
-
-  int get _legalLaneIndex => _maneuver == Maneuver.left ? 0 : 1;
 
   /// NPC lanes — maneuver-INDEPENDENT (cross/through traffic is unrelated to the
   /// player's commanded turn). 8 groups: each of the 4 approaches has an inner
@@ -330,14 +473,14 @@ class IntersectionLightTile extends TileBase {
   Vector2 get entryAnchor => Vector2(_cx + _innerOff, _h); // inner south
 
   @override
-  Vector2 get exitAnchor => switch (_maneuver) {
+  Vector2 get exitAnchor => switch (_committedExit) {
         Maneuver.straight => Vector2(_cx + _innerOff, 0),
         Maneuver.left => Vector2(0, _cy - _innerOff),
         Maneuver.right => Vector2(_w, _cy + _innerOff),
       };
 
   @override
-  Vector2 get exitDirection => switch (_maneuver) {
+  Vector2 get exitDirection => switch (_committedExit) {
         Maneuver.straight => Vector2(0, -1),
         Maneuver.left => Vector2(-1, 0),
         Maneuver.right => Vector2(1, 0),
@@ -357,13 +500,13 @@ class IntersectionLightTile extends TileBase {
     final outerW = localToWorld(Vector2(_cx + _outerOff, _h));
     final enteredInner =
         playerCentreWorld.distanceTo(innerW) <= playerCentreWorld.distanceTo(outerW);
-    // Command the maneuver that requires the OTHER lane.
+    // Command the maneuver that requires the OTHER lane, so a lane change is
+    // always part of the task. The player paths themselves are maneuver-
+    // independent (both lanes straight; the turn is chosen at the box with the
+    // wheel), so there is nothing to rebuild here.
     _maneuver = enteredInner
         ? (_rng.nextBool() ? Maneuver.straight : Maneuver.right) // require outer
         : Maneuver.left; // require inner
-    // Rebuild the player paths for the now-bound maneuver — anything that read
-    // them before the bind (e.g. the debug overlay) built them for the default.
-    _playerPaths = _buildPlayerPaths();
   }
 
   // ---------------------------------------------------------------------------
@@ -424,15 +567,11 @@ class IntersectionLightTile extends TileBase {
   bool _movementStraight(Spline path) => _straightCache.putIfAbsent(
       path, () => path.tangent(0.0).dot(path.tangent(1.0)) > 0.85);
 
-  // ---------------------------------------------------------------------------
-  // Steering gate: ON before the box, OFF inside it, ON again past it.
-  // ---------------------------------------------------------------------------
-  @override
-  bool allowsLaneChangeAt(Vector2 localPos) {
-    final inBox =
-        (localPos.x - _cx).abs() <= _half && (localPos.y - _cy).abs() <= _half;
-    return !inBox;
-  }
+  // Steering is ALWAYS on across this tile (no box-off override): the box is purely
+  // a rules region now. The two lane spines merge by offset the whole height; the
+  // turns hang on them as taps ([playerBranches], resolved per-frame by TileManager).
+  // Through the box the player follows the chosen turn (or the straight spine) with the
+  // ordinary kIntentionLean lean — there is no swerve-cheat to suppress.
 
   // ---------------------------------------------------------------------------
   // Per-frame sensor + grading wiring.
@@ -447,6 +586,16 @@ class IntersectionLightTile extends TileBase {
   ) {
     super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
     if (kDebugMode && DebugState.showDebug) _debugPeds = pedestrians;
+
+    // Track the committed exit from the branch the player is on. With the discrete
+    // fork node the player only becomes a branch ONCE — when they cross the box
+    // mouth and pick — so this fires a single time (no per-frame thrash), re-placing
+    // the downstream tile against the now-final exit while it's a full tile ahead.
+    final exitM = _exitManeuver(playerCar.spline);
+    if (exitM != null && exitM != _committedExit) {
+      _committedExit = exitM;
+      exitChanged = true;
+    }
 
     // One pedestrian probe per vehicle, along its own movement spline.
     final playerSpline = playerCar.spline;
@@ -463,7 +612,7 @@ class IntersectionLightTile extends TileBase {
     _applySignalToNpcs(pedStopById, allNpcs, playerCar);
     _signalPlayerWait(playerCar);
     _updateReactionSuppression(playerCar);
-    _checkPlayerApproach(playerCar); // red-light + wrong-lane + safe-clear
+    _checkPlayerApproach(playerCar); // red-light + safe-clear
     if (_phaseOf(_Heading.north) == SignalPhase.green) {
       _checkLeftYieldToOncoming(playerCar);
     }
@@ -717,10 +866,10 @@ class IntersectionLightTile extends TileBase {
   }
 
   // ---------------------------------------------------------------------------
-  // Player approach state machine: red-light, wrong-lane, safe-clear.
+  // Player approach state machine: red-light, safe-clear. (Lane-discipline
+  // grading is deferred — merge-first already steers you to the correct lane.)
   // ---------------------------------------------------------------------------
   bool _redViolationFired = false;
-  bool _wrongLaneFired = false;
   bool _gateCrossed = false;
   bool _clearedReported = false;
 
@@ -740,10 +889,10 @@ class IntersectionLightTile extends TileBase {
 
     if (localY > _cy + _stopLineFromCentre + _approachDistance) {
       _redViolationFired = false;
-      _wrongLaneFired = false;
       _yieldViolationFired = false;
       _gateCrossed = false;
       _clearedReported = false;
+      _committedExit = Maneuver.straight;
       return;
     }
 
@@ -758,51 +907,19 @@ class IntersectionLightTile extends TileBase {
       return;
     }
 
-    // The near edge of the box is the decision point: the lane is now locked
-    // (steering is off inside the box), so the lane the player committed to is
-    // the verdict, and a red here is running the light.
+    // The box near edge is the red-light decision point (the player is about to
+    // enter the junction). The EXIT and the wrong-lane fault are decided later, on
+    // the way OUT, by where the free-steered trajectory leaves the box
+    // (see [_reRailOnExit]).
     if (!_gateCrossed && localY <= _gateLineY) {
       _gateCrossed = true;
-
       if (_phaseOf(_Heading.north) == SignalPhase.red && !_redViolationFired) {
         _redViolationFired = true;
         GameBus.instance.emit(RedLightViolationEvent());
       }
-
-      final legal = playerPaths[_legalLaneIndex];
-      // Fairness: only fault the wrong lane if the legal lane was actually
-      // reachable. If a stopped car packs the legal lane right beside the player
-      // at the gate, the change was physically blocked — driving correctly into
-      // a jam isn't a fault. (Spawning already keeps fresh cars off the player's
-      // approach; this covers a red-light queue.)
-      if (!identical(playerCar.spline, legal) &&
-          !_wrongLaneFired &&
-          !_legalLaneBlockedBeside(playerCar)) {
-        _wrongLaneFired = true;
-        debugPrint('[LIGHT2] wrong lane for $_maneuver');
-        GameBus.instance.emit(WrongLaneEvent());
-      }
     }
   }
 
-  /// Whether the legal approach lane is packed by a STOPPED car right beside the
-  /// player at the gate — i.e. the forced lane change was physically blocked, so
-  /// the wrong-lane fault would be unfair. Only the player's own approach (south,
-  /// heading north) lane matters.
-  bool _legalLaneBlockedBeside(PlayerCar playerCar) {
-    final legalX = _cx + (_legalLaneIndex == 0 ? _innerOff : _outerOff);
-    final pl = worldToLocal(playerCar.position);
-    for (final npc in npcs) {
-      if (npc.spline == null) continue;
-      if (_headingOfLane(npc.laneIndex) != _Heading.north) continue;
-      if (npc.speed > kStopSpeedThreshold) continue; // only a stopped car blocks
-      final n = worldToLocal(npc.position);
-      if ((n.x - legalX).abs() > kCarWidth) continue; // in the legal lane
-      if ((n.y - pl.y).abs() > kCarLength * 1.6) continue; // beside / just ahead
-      return true;
-    }
-    return false;
-  }
 
   // ---------------------------------------------------------------------------
   // Pedestrian crossings (urban): probe, give-way fault, signal hold.

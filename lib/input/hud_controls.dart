@@ -23,7 +23,15 @@ class HudControls extends StatefulWidget {
 class _HudControlsState extends State<HudControls> {
   bool _gasDown = false;
   bool _brakeDown = false;
-  double _dragDx = 0.0; // accumulated horizontal travel for the active drag
+
+  /// The single pointer currently steering, and where it first touched. Tracked by
+  /// raw pointer id (not a GestureDetector drag) so the finger-UP is ALWAYS
+  /// reported: the horizontal-drag recognizer can lose its end event in the
+  /// multi-touch gesture arena (a second finger on the pedals), which left the
+  /// steer stuck "on" after the finger lifted — so a released wheel still turned at
+  /// a fork. A Listener has no arena: pointer-up/cancel fire unconditionally.
+  int? _steerPointer;
+  double _steerStartX = 0.0;
 
   void _setGas(bool down) {
     setState(() => _gasDown = down);
@@ -47,37 +55,51 @@ class _HudControlsState extends State<HudControls> {
     }
   }
 
-  void _onSwipeStart(DragStartDetails _) {
-    _dragDx = 0.0;
+  // Steering is a raw horizontal swipe tracked by pointer id. The pedals are
+  // opaque Listeners on top, so they consume the gas/brake finger and only the
+  // steering finger ever reaches this layer.
+  void _onSteerDown(PointerDownEvent e) {
+    if (_steerPointer != null) return; // already steering with another finger
+    _steerPointer = e.pointer;
+    _steerStartX = e.position.dx;
     InputState.instance.setLaneSteer(0.0);
   }
 
-  void _onSwipeUpdate(DragUpdateDetails d) {
-    _dragDx += d.delta.dx;
+  void _onSteerMove(PointerMoveEvent e) {
+    if (e.pointer != _steerPointer) return;
+    final dx = e.position.dx - _steerStartX; // total displacement from touchdown
     // Strip the deadzone so a slight flinch produces no movement at all.
     double eff = 0.0;
-    if (_dragDx > kLaneSteerDeadzone) {
-      eff = _dragDx - kLaneSteerDeadzone;
-    } else if (_dragDx < -kLaneSteerDeadzone) {
-      eff = _dragDx + kLaneSteerDeadzone;
+    if (dx > kLaneSteerDeadzone) {
+      eff = dx - kLaneSteerDeadzone;
+    } else if (dx < -kLaneSteerDeadzone) {
+      eff = dx + kLaneSteerDeadzone;
     }
     InputState.instance.setLaneSteer(eff);
   }
 
-  void _onSwipeEnd() => InputState.instance.endLaneSteer();
+  // Finger up OR the gesture was cancelled → the wheel releases to centre. This is
+  // the load-bearing fix: it MUST run on every lift so a released wheel never keeps
+  // steering into a fork.
+  void _onSteerEnd(PointerEvent e) {
+    if (e.pointer != _steerPointer) return;
+    _steerPointer = null;
+    InputState.instance.endLaneSteer();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        // Swipe layer — fills the screen, sits behind the pedals.
+        // Swipe layer — fills the screen, sits behind the pedals. A raw Listener
+        // (not a horizontal-drag GestureDetector) so the finger-up always fires.
         Positioned.fill(
-          child: GestureDetector(
+          child: Listener(
             behavior: HitTestBehavior.translucent,
-            onHorizontalDragStart: _onSwipeStart,
-            onHorizontalDragUpdate: _onSwipeUpdate,
-            onHorizontalDragEnd: (_) => _onSwipeEnd(),
-            onHorizontalDragCancel: _onSwipeEnd,
+            onPointerDown: _onSteerDown,
+            onPointerMove: _onSteerMove,
+            onPointerUp: _onSteerEnd,
+            onPointerCancel: _onSteerEnd,
             child: const SizedBox.expand(),
           ),
         ),

@@ -232,8 +232,12 @@ class TileManager extends Component {
       worldOffset: tile.position,
       worldAngle: tile.orientation,
     );
+    // Lane options follow the spline network: the mates of the lane just assigned
+    // (for ordinary tiles this is the full lane set; an intersection narrows it past
+    // a fork). Same as playerPaths for every current tile at entry — but routing
+    // through it stays spline-driven.
     playerCar.setLaneOptions(
-      tile.playerPaths,
+      tile.playerLaneMates(lane),
       tile.position,
       tile.orientation,
       allowLaneChange: tile.allowsLaneChange,
@@ -248,8 +252,10 @@ class TileManager extends Component {
   void update(double dt) {
     super.update(dt);
     _checkHandOff();
+    _checkPlayerBranch();
     _advanceNpcsAcrossSeams(dt);
     _updateNpcSensors(dt);
+    _commitExitChanges();
     _updatePedestrians(dt);
     _updatePlayerLaneChange();
     _cullDistantNpcs();
@@ -429,12 +435,25 @@ class TileManager extends Component {
     final local = tile.worldToLocal(playerCar.position);
     playerCar.setLaneChangeAllowed(tile.allowsLaneChangeAt(local));
     playerCar.setForkTargets(
-        tile.splineSteerTargetAt(local, -1), tile.splineSteerTargetAt(local, 1));
+      tile.splineSteerTargetAt(local, -1),
+      tile.splineSteerTargetAt(local, 1),
+    );
   }
 
   void _updateNpcSensors(double dt) {
     for (final tile in _activeTiles) {
       tile.updateNpcSensors(dt, playerCar, _spawner.allNpcs, pedestrians);
+    }
+  }
+
+  /// A tile whose exit is decided late (the 2-lane light, "miss = straight")
+  /// flags [TileBase.exitChanged] when the player commits their lane at the box;
+  /// re-place its downstream tiles against the now-final exit.
+  void _commitExitChanges() {
+    final at = activeTile;
+    if (at != null && at.exitChanged) {
+      at.exitChanged = false;
+      _rePlaceAfter(at);
     }
   }
 
@@ -463,12 +482,83 @@ class TileManager extends Component {
       _spawnNextTile();
     }
 
-    // Hand off when the player has reached the exact end of the current spline.
-    // Using hasReachedEnd (t=1.0) ensures the new spline's t=0 maps to the
-    // same world position — no jump.
+    // Hand off to the next tile when the player has reached the exact end of the
+    // current spline (a through-lane spine, or a turn branch, runs to the tile edge).
+    // Using hasReachedEnd (t=1.0) ensures the new spline's t=0 maps to the same world
+    // position — no jump. In-tile TURN TAPS are resolved per-frame by
+    // [_checkPlayerBranch], not here — they're mid-spline, not at the end.
     if (_activeTiles.length >= 2 && playerCar.hasReachedEnd) {
       _handOffToNextTile();
     }
+  }
+
+  // The spine the player is following + their distance on it last frame, so a TURN
+  // TAP fires the instant the player CROSSES it (not every frame after). Reset
+  // whenever the spline changes (merge / turn / hand-off), so a merge that joins a
+  // spine PAST a tap can't retro-trigger it.
+  Spline? _branchSpline;
+  double _branchBaseDist = 0.0;
+
+  /// Resolve in-tile TURN TAPS each frame. A branch spline hangs off a point on the
+  /// player's current through-lane spine (its start sits ON the spine). When the
+  /// player crosses that tap while leaning toward the branch's side, divert onto it
+  /// (position-continuous — coincident point — carrying the lean, haptic). Cross it
+  /// neutral → stay straight on the spine. This is the universal "take the turn"
+  /// primitive; the spine stays whole so the merge ([_updatePlayerLaneChange] / the
+  /// player's SLIDE) never sees a seam.
+  void _checkPlayerBranch() {
+    final tile = activeTile;
+    if (tile == null) return;
+    final cur = playerCar.spline;
+    if (cur == null) return;
+    if (!identical(cur, _branchSpline)) {
+      _branchSpline = cur;
+      _branchBaseDist = playerCar.distanceTravelled;
+      return; // need two samples to detect a crossing
+    }
+    final from = _branchBaseDist;
+    final to = playerCar.distanceTravelled;
+    _branchBaseDist = to;
+    final chosen =
+        branchToTake(cur, tile.playerBranches(cur), from, to, playerCar.leanSign);
+    if (chosen == null) return;
+    // Haptic on a TURN — diverting off the through lane should buzz.
+    playerCar.commitFork(
+        chosen, tile.playerLaneMates(chosen), tile.position, tile.orientation,
+        haptic: TileBase.pathTurns(chosen));
+  }
+
+  /// The branch (if any) the player should divert onto this frame: among the branches
+  /// hung on [spine] whose tap distance was CROSSED in (fromDist, toDist], the NEAREST
+  /// one whose turn side matches the held [lean] (-1 left / +1 right; 0 never diverts).
+  /// A branch's side is the signed turn of its overall direction (start→end chord)
+  /// relative to the spine's heading — so a left-curving branch needs a left lean.
+  /// Pure (no manager state) → unit-tested directly on the real splines.
+  @visibleForTesting
+  static Spline? branchToTake(Spline spine, List<Spline> branches, double fromDist,
+      double toDist, int lean) {
+    if (branches.isEmpty || toDist <= fromDist || lean == 0) return null;
+    final ref = spine.tangent(1.0);
+    int sideOf(Spline b) {
+      final d = b.evaluate(1.0) - b.evaluate(0.0);
+      if (d.length < 1e-6) return 0;
+      d.normalize();
+      final s = atan2(ref.x * d.y - ref.y * d.x, ref.x * d.x + ref.y * d.y);
+      return s < 0 ? -1 : (s > 0 ? 1 : 0);
+    }
+
+    Spline? chosen;
+    double chosenDist = double.infinity;
+    for (final b in branches) {
+      final d = spine.distanceAtNearest(b.evaluate(0.0));
+      if (d <= fromDist || d > toDist) continue; // not crossed this frame
+      if (sideOf(b) != lean) continue; // leaning the other way → not this turn
+      if (d < chosenDist) {
+        chosenDist = d;
+        chosen = b;
+      }
+    }
+    return chosen;
   }
 
   void _handOffToNextTile() {

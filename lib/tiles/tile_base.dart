@@ -49,6 +49,10 @@ abstract class TileBase extends PositionComponent {
   List<Spline> get playerPaths;
   List<Spline> get npcPaths;
 
+  /// Extra player-reachable splines to draw in the debug overlay beyond
+  /// [playerPaths] — e.g. turn-fork branches that aren't the default lane path.
+  List<Spline> get debugExtraSplines => const [];
+
   /// Whether the player may change lanes while on this tile. Defaults to "only
   /// if there's more than one parallel lane to switch to", so single-lane tiles
   /// (intersection maneuvers, start) turn lane switching off entirely — the
@@ -90,6 +94,35 @@ abstract class TileBase extends PositionComponent {
   /// seamlessly (one switch per drag). Default: never a fork.
   Spline? splineSteerTargetAt(Vector2 localPos, int direction) => null;
 
+  /// TURN TAPS — the reusable, jump-free "hang a turn on a through-lane" hook.
+  ///
+  /// Branch splines that TAP onto [spine] within THIS tile: each one's start sits
+  /// exactly ON [spine] (a coincident point), then it curves away to a connected
+  /// road. Empty (default) → [spine] is a plain lane with no turns; it runs to the
+  /// tile edge and hands off normally. When the player CROSSES a branch's tap point
+  /// while leaning toward that branch's side, TileManager diverts onto it with a
+  /// selection-click and "leaves the tap behind"; crossing it neutral stays straight
+  /// on the spine. The coincident start is what makes the switch position-continuous.
+  /// Because the spine is ONE continuous spline (never chopped to make a fork), the
+  /// parallel-lane merge ([playerLaneMates]) never sees a seam — that is the whole
+  /// reason taps replaced end-of-spline forks. Near/far turns are just two taps on
+  /// one spine at two depths; nothing about them is special.
+  List<Spline> playerBranches(Spline spine) => const [];
+
+  /// The parallel lane-mates of [current] on THIS tile — the set the player may
+  /// MERGE among while following [current]. This is what makes lane changing
+  /// spline-network-driven rather than fixed per tile: TileManager sets it as the
+  /// player's lane options whenever it assigns a spline (hand-off AND fork). Default:
+  /// the full [playerPaths] when [current] is one of them (an ordinary multi-lane
+  /// road, mates anywhere along it), else just [current] (a lone spline has no mate).
+  /// A tile whose lane structure CHANGES along the route overrides this — e.g. the
+  /// intersection: the two through-lane spines are mates the whole height (the
+  /// straight corridor), and PAST a turn the two exit lanes of that side are mates
+  /// (so you can still merge after the turn). Without this, the player gets stranded
+  /// one-lane past any branch.
+  List<Spline> playerLaneMates(Spline current) =>
+      playerPaths.contains(current) ? playerPaths : [current];
+
   /// Spawnable NPC lanes: each entry is the list of movement paths sharing
   /// one entry point — the spawner picks one per car. The lane index is the
   /// stable identity used for refill counting and (on intersections) the
@@ -115,6 +148,13 @@ abstract class TileBase extends PositionComponent {
   /// HUD instruction text for tiles whose task isn't an intersection maneuver
   /// (e.g. "Merge left"). Null → the HUD uses [commandedManeuver]'s label.
   String? get taskLabel => null;
+
+  /// Set by a tile whose EXIT direction is decided late — the 2-lane light,
+  /// where the corridor turns only once the player commits to the turn lane at
+  /// the box ("miss = straight"). When true, TileManager re-places the
+  /// already-streamed downstream tiles against this tile's now-final exit and
+  /// clears it. Tiles whose exit is known at spawn never set it.
+  bool exitChanged = false;
 
   /// Called once when the player is assigned to this tile, BEFORE [playerPaths]
   /// is read, with the player's current lane-centre world position. A tile that
@@ -355,6 +395,17 @@ abstract class TileBase extends PositionComponent {
 
     for (final s in playerPaths) {
       _drawSplinePath(canvas, s, playerPaint);
+    }
+
+    // Extra player options not in [playerPaths] (e.g. turn-fork branches) —
+    // dimmer green so they read as "available but not the default lane path".
+    final extraPaint = Paint()
+      ..color = const Color(0x8800E676)
+      ..strokeWidth = 3
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    for (final s in debugExtraSplines) {
+      _drawSplinePath(canvas, s, extraPaint);
     }
 
     // NPC paths — orange

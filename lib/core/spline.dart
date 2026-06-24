@@ -59,6 +59,35 @@ class Spline {
     return (d / _totalLength).clamp(0.0, 1.0);
   }
 
+  /// Arc-length distance (world units) of the point on the spline NEAREST [p].
+  /// For a point that lies ON the spline — e.g. where a turn branch taps onto a
+  /// through-lane spine — this is where along the lane it attaches, so a fork can
+  /// fire at exactly that distance. Coarse scan (64) then a short ternary refine,
+  /// so it's precise enough to place a tap without quantisation slop.
+  double distanceAtNearest(Vector2 p) {
+    double bt = 0.0, bd = double.infinity;
+    const n = 64;
+    for (int i = 0; i <= n; i++) {
+      final t = i / n;
+      final d2 = (evaluate(t) - p).length2;
+      if (d2 < bd) {
+        bd = d2;
+        bt = t;
+      }
+    }
+    double lo = (bt - 1.0 / n).clamp(0.0, 1.0);
+    double hi = (bt + 1.0 / n).clamp(0.0, 1.0);
+    for (int k = 0; k < 16; k++) {
+      final m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
+      if ((evaluate(m1) - p).length2 < (evaluate(m2) - p).length2) {
+        hi = m2;
+      } else {
+        lo = m1;
+      }
+    }
+    return ((lo + hi) / 2) * _totalLength;
+  }
+
   // ---------------------------------------------------------------------------
   // Arc-length LUT construction
   // ---------------------------------------------------------------------------
