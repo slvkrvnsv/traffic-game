@@ -184,14 +184,38 @@ class PlayerCar extends CarBase {
         !blockOffset &&
         !_steerConsumed;
 
+    // The lean cap = the ACTUAL separation to the adjacent lane (so a diverging /
+    // widening lane is reachable the moment it opens), or — with NO lane that way — a
+    // SLIGHT [kIntentionLean] edge-pull: the intention hint (which side the next fork
+    // node will pick), universal on every tile. Computed up here (not just at the
+    // clamp) so the nose can SETTLE as the lean reaches the edge — see step 1.
+    final sepRight = _adjacentSeparation(1);
+    final sepLeft = _adjacentSeparation(-1);
+    const edgeCap = kIntentionLean;
+    final maxRight = sepRight ?? edgeCap;
+    final maxLeft = sepLeft ?? edgeCap;
+
     // 1. Target nose angle + how fast the nose may turn toward it. Turn-in is
-    //    crisp; the self-centring return is deliberately lazier (safe abort).
+    //    crisp; the self-centring return (and the edge settle) is deliberately lazier.
     final double target;
     final double slewRate;
     if (steerActive) {
       final steer = (input.laneSteerPx / kSteerInputRange).clamp(-1.0, 1.0);
-      target = steer * kMaxBodyYaw;
-      slewRate = kHeadingSlewRate;
+      // Dragging INTO an edge already reached (offset at the cap on the drag side, no
+      // lane to merge there) → ease the nose back to STRAIGHT to HOLD the lean. A car
+      // parked at a constant offset drives PARALLEL to the lane (nose 0); if the nose
+      // kept pointing out it would (a) snap straight the instant the clamp pinned the
+      // offset, and (b) sit cranked — wheels turned — while the car tracks straight.
+      // Rolling it down at the lazy return rate is the "rolls in and settles" feel.
+      final intoRightCap = steer > 0 && lateralOffset >= maxRight - 0.5;
+      final intoLeftCap = steer < 0 && lateralOffset <= -maxLeft + 0.5;
+      if (intoRightCap || intoLeftCap) {
+        target = 0.0;
+        slewRate = kReturnSlewRate;
+      } else {
+        target = steer * kMaxBodyYaw;
+        slewRate = kHeadingSlewRate;
+      }
     } else {
       // Self-centre: nose points back in proportion to how far off-lane. As the
       // offset shrinks the nose straightens, so the return decays monotonically
@@ -217,6 +241,7 @@ class PlayerCar extends CarBase {
     //    monotonic, so the car glues onto its spline the instant steering goes
     //    away — e.g. handing off from the merge tile to the straight road — with
     //    no drift-out-then-correct wobble.
+    final offsetBefore = lateralOffset; // this frame's start, before any step moves it
     final lateralStep = speed * math.sin(_heading) * dt;
     if (steerActive) {
       lateralOffset += lateralStep;
@@ -239,33 +264,24 @@ class PlayerCar extends CarBase {
       _heading = 0.0;
     }
 
-    // 4. Cap the lean at the available lanes; straighten the nose at the edge.
-    //    The cap is the *actual* separation to the adjacent lane, not a fixed
-    //    lane width — so a lane that diverges in (merge) or out (widen) is
-    //    reachable as soon as it has opened even slightly, instead of being
-    //    unreachable until it happens to be a full lane away. For ordinary
-    //    parallel lanes the separation is exactly kLaneWidth, so this is
-    //    identical to the old behaviour there.
-    // Skipped only in the merge tile's one-shot fork ([blockOffset]): there the
-    // spline-switch is the lane change, and a cap clamp would reset the nose every
-    // frame as the converging lane's separation drifts — that per-frame reset is
-    // the fork wobble. In a LIVE intention fork the cap stays: at the armed edge
-    // lane there is no adjacent lane that way, so the cap is the fixed edge-pull
-    // (it can't collapse) and it's exactly what gives the slight intention lean.
-    final sepRight = _adjacentSeparation(1);
-    final sepLeft = _adjacentSeparation(-1);
-    // A drag with no lane to merge into that way is the intention cue: cap it at a
-    // SLIGHT lean ([kIntentionLean], universal on every tile now), not a full
-    // edge-pull, so the car only hints toward the side it's leaning instead of
-    // drifting toward the centreline. When a lane IS there, the separation cap
-    // merges as normal.
-    const edgeCap = kIntentionLean;
-    final maxRight = sepRight ?? edgeCap;
-    final maxLeft = sepLeft ?? edgeCap;
-    final capped = lateralOffset.clamp(-maxLeft, maxRight);
-    if (!blockOffset && capped != lateralOffset) {
-      lateralOffset = capped;
-      _heading = 0.0;
+    // 4. Hold the lean at the cap (computed above). The clamp ONLY cancels OUTWARD
+    //    growth past the cap this frame — it must NOT slam a LARGER carried offset
+    //    (left by a just-finished merge / fork / hand-off) down in one frame; the
+    //    self-centre (step 3) eases that in at the physical crab speed. That GLIDE is
+    //    what stops "snaps onto the new spline too fast": a turn taken right after a
+    //    merge sees its sibling exit lane start staggered ahead, the cap momentarily
+    //    collapses to [kIntentionLean], and a ~30u carried offset would be yanked to
+    //    12u in one frame. The nose is rolled to straight by step 1's edge-settle, so
+    //    the clamp NO LONGER zeroes the heading — that instant zero was the nose-snap
+    //    AND the wheels-turned-while-the-car-tracks-straight bug.
+    // Skipped in the merge tile's one-shot fork ([blockOffset]): there the spline
+    // switch IS the lane change, so a cap clamp would just wobble the nose.
+    if (!blockOffset) {
+      if (lateralOffset > maxRight && lateralOffset > offsetBefore) {
+        lateralOffset = math.max(maxRight, offsetBefore);
+      } else if (lateralOffset < -maxLeft && lateralOffset < offsetBefore) {
+        lateralOffset = math.min(-maxLeft, offsetBefore);
+      }
     }
 
     // 5. Commit once the car has arced past [kLaneCommitFraction] of the way to

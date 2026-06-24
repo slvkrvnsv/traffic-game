@@ -268,7 +268,7 @@ const double kLaneCommitFraction = 0.6;
 /// node), NOT a drift toward the centreline (the old full edge-pull, ~32u, looked
 /// like crossing into the opposite lane). This is the edge-pull cap on EVERY tile
 /// now, so the lean feels the same everywhere. A feel knob.
-const double kIntentionLean = 12.0;
+const double kIntentionLean = 8.0;
 /// Minimum real separation (world units) between the current lane and an
 /// adjacent one before a discrete lane-change *commit* is allowed. The car may
 /// still lean toward a closer lane, but no commit (and its haptic) fires until

@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flame/components.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -242,5 +243,64 @@ void main() {
     });
     expect(merged, isTrue,
         reason: 'the right post-turn merge must work too (curved-lane projection fix)');
+  });
+
+  test('merge-then-turn: the carried offset GLIDES onto the turn, never slams', () {
+    // The exact bug: slide inner->outer, then immediately take the right turn while
+    // the merge offset is still large. At the turn's start its sibling exit lane
+    // begins ~80u AHEAD, so the cap momentarily collapses to kIntentionLean — the
+    // old per-frame clamp YANKED the ~30u carried offset to 12u in a single frame
+    // (an ~18u sideways snap, "moving to the spline too quick"). Now the cap only
+    // blocks outward growth, so the offset eases home at the physical crab rate.
+    final tile = place();
+    final p = PlayerCar();
+    final outer = tile.approach(inner: false);
+    final nearRight = tile.branch(inner: false, m: Maneuver.right);
+    // Park on the outer lane just south of the right tap, carrying a fresh-merge
+    // offset (slid in from the inner lane → sitting ~32u to its left).
+    final tapDist = outer.distanceAtNearest(nearRight.evaluate(0));
+    p.assignSpline(outer, worldOffset: Vector2.zero());
+    p.setT((tapDist - 30) / outer.totalLength);
+    p.lateralOffset = -32.0;
+    p.setLaneOptions(tile.playerLaneMates(outer), Vector2.zero(), 0.0,
+        allowLaneChange: true);
+    p.position = p.splinePosition;
+
+    Spline? branchSpline;
+    double baseDist = 0.0;
+    var prev = p.position.clone();
+    var maxJump = 0.0;
+    var tookTurn = false;
+    for (int i = 0; i < 90 && !p.hasReachedEnd; i++) {
+      p.speed = kmhToUnits(40); // PIN the speed → deterministic crab rate
+      final local = tile.worldToLocal(p.position);
+      InputState.instance.setLaneSteer(200); // hold right through the tap
+      p.setLaneChangeAllowed(tile.allowsLaneChangeAt(local));
+      p.update(1 / 60);
+      final cur = p.spline!;
+      if (!identical(cur, branchSpline)) {
+        branchSpline = cur;
+        baseDist = p.distanceTravelled;
+      } else {
+        final chosen = TileManager.branchToTake(
+            cur, tile.playerBranches(cur), baseDist, p.distanceTravelled, p.leanSign);
+        baseDist = p.distanceTravelled;
+        if (chosen != null) {
+          p.commitFork(chosen, tile.playerLaneMates(chosen), Vector2.zero(), 0.0,
+              haptic: TileBase.pathTurns(chosen));
+        }
+      }
+      if (identical(p.spline, nearRight)) tookTurn = true;
+      final a = p.angle;
+      final perp = Vector2(-math.sin(a), math.cos(a));
+      final lat = (p.position - prev).dot(perp).abs();
+      if (i > 0) maxJump = math.max(maxJump, lat);
+      prev = p.position.clone();
+    }
+
+    expect(tookTurn, isTrue, reason: 'held right → took the right turn');
+    expect(maxJump, lessThan(4.0),
+        reason: 'the carried merge offset must glide onto the turn spline at the '
+            'crab rate, not get slammed to the lean cap in one frame');
   });
 }
