@@ -370,12 +370,80 @@ class IntersectionTile extends TileBase {
     return v;
   }
 
-  /// Player path through the box for the commanded maneuver — always the
-  /// south approach.
+  // ---------------------------------------------------------------------------
+  // Player route — SPLINE-STEERED turns (the universal mechanism, same as the
+  // 2-lane light). The player drives ONE continuous through-spine (south→north
+  // straight); the LEFT and RIGHT turns hang on it as TAPS ([playerBranches]).
+  // Leaning into a tap at the box diverts onto that turn (a selection-click);
+  // neutral stays straight. So a 1-lane intersection now demands you STEER the
+  // commanded turn rather than auto-follow a baked maneuver spline.
+  //
+  // The game still COMMANDS a maneuver ([commandedManeuver] — the HUD instruction);
+  // the exit follows where you ACTUALLY steer ([_committedExit]), and the downstream
+  // road re-places to match (late-bound exit, like the light tile). A turn BRANCH
+  // reuses the existing arc geometry: the south-approach points with the straight
+  // run-up dropped, so it STARTS at a lead point sitting ON the through-spine (a
+  // coincident tap) heading north, then arcs to the exit lane.
+  // ---------------------------------------------------------------------------
+  late final Spline _throughSpine =
+      Spline(_southApproachPoints(Maneuver.straight));
+  late final Spline _leftBranch =
+      Spline(_southApproachPoints(Maneuver.left).sublist(2));
+  late final Spline _rightBranch =
+      Spline(_southApproachPoints(Maneuver.right).sublist(2));
+
   @override
-  late final List<Spline> playerPaths = [
-    Spline(_southApproachPoints(maneuver)),
-  ];
+  late final List<Spline> playerPaths = [_throughSpine];
+
+  /// The LEFT and RIGHT turns tap onto the through-spine; leaning into one at the
+  /// box takes it. Both are offered at a 4-way regardless of control — the player
+  /// may be commanded a left even at a light (it gives way to oncoming).
+  @override
+  List<Spline> playerBranches(Spline spine) =>
+      identical(spine, _throughSpine) ? [_leftBranch, _rightBranch] : const [];
+
+  /// Steering is always on: the cosmetic ≤[kIntentionLean] intention lean plus the
+  /// turn taps. A single-lane road has no parallel lane, so the lean never commits a
+  /// merge — it's purely the intention cue that precedes a tap.
+  @override
+  bool get allowsLaneChange => true;
+
+  /// Draw the two turn branches in the debug overlay (the through-spine draws via
+  /// [playerPaths]).
+  @override
+  List<Spline> get debugExtraSplines => [_leftBranch, _rightBranch];
+
+  /// The exit the player has actually STEERED — vs the commanded [maneuver]. Drives
+  /// the late exit re-placement ([exitChanged]); straight until they divert onto a
+  /// turn at the box, then it flips once.
+  Maneuver _committedExit = Maneuver.straight;
+
+  /// The exit committed by following spline [s] — a turn branch, or the straight
+  /// through-spine. Null for any other spline.
+  Maneuver? _exitManeuver(Spline? s) {
+    if (s == null) return null;
+    if (identical(s, _leftBranch)) return Maneuver.left;
+    if (identical(s, _rightBranch)) return Maneuver.right;
+    if (identical(s, _throughSpine)) return Maneuver.straight;
+    return null;
+  }
+
+  /// The full commanded-maneuver path (south edge → exit), used only by the
+  /// conflict test seam [playerConflictsWithLane] so it still reflects the commanded
+  /// turn (at runtime, conflicts use the player's live steered spline instead).
+  late final Spline _commandedPath = Spline(_southApproachPoints(maneuver));
+
+  /// Test seam: the player turn BRANCH for [m] — the spline a tap diverts onto.
+  @visibleForTesting
+  Spline turnBranch(Maneuver m) =>
+      m == Maneuver.left ? _leftBranch : _rightBranch;
+
+  /// Test seam: simulate the player having STEERED onto turn [m] at the box (what
+  /// the runtime does from the committed spline via [_exitManeuver]), so the
+  /// late-bound exit ([exitAnchor]/[exitDirection]) rotates without driving a full
+  /// approach through the manager.
+  @visibleForTesting
+  void debugCommitExit(Maneuver m) => _committedExit = m;
 
   /// Spawnable NPC lanes, one per approach in [Heading.values] order
   /// (lane index == approach heading index). Each lane offers its movements; the
@@ -407,14 +475,14 @@ class IntersectionTile extends TileBase {
   Vector2 get entryAnchor => Vector2(_nLaneX, kTileSize);
 
   @override
-  Vector2 get exitAnchor => switch (maneuver) {
+  Vector2 get exitAnchor => switch (_committedExit) {
         Maneuver.straight => Vector2(_nLaneX, 0),
         Maneuver.left => Vector2(0, _wLaneY),
         Maneuver.right => Vector2(kTileSize, _eLaneY),
       };
 
   @override
-  Vector2 get exitDirection => switch (maneuver) {
+  Vector2 get exitDirection => switch (_committedExit) {
         Maneuver.straight => Vector2(0, -1),
         Maneuver.left => Vector2(-1, 0),
         Maneuver.right => Vector2(1, 0),
@@ -492,7 +560,7 @@ class IntersectionTile extends TileBase {
   /// straight-through movement. Exposed for tests only.
   @visibleForTesting
   bool playerConflictsWithLane(int lane) => _movementsConflict(Heading.north,
-      playerPaths.first, Heading.values[lane], npcLanes[lane].first);
+      _commandedPath, Heading.values[lane], npcLanes[lane].first);
 
   /// Whether two NPC movements conflict — [laneA]/[laneB] are approach
   /// indices, [a]/[b] pick the maneuver within the lane. Tests only.
@@ -594,6 +662,17 @@ class IntersectionTile extends TileBase {
     // commits and clears).
     super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
 
+    // Late-bound exit: the player STEERS the turn at the box, so the committed exit
+    // isn't known until they divert onto a turn branch. Track it off the spline they
+    // are actually following; when it changes, flag [exitChanged] so TileManager
+    // re-places the already-streamed downstream road against the real exit. With the
+    // discrete tap it flips at most once (straight → the chosen turn).
+    final exitM = _exitManeuver(playerCar.spline);
+    if (exitM != null && exitM != _committedExit) {
+      _committedExit = exitM;
+      exitChanged = true;
+    }
+
     // Cache for the debug zebra-box overlay (rendered separately).
     if (kDebugMode && DebugState.showDebug) _debugPeds = pedestrians;
 
@@ -645,12 +724,14 @@ class IntersectionTile extends TileBase {
     // Collect every vehicle that sits on one of *this* tile's lanes together
     // with its heading and identity, in tile-local coordinates.
     final samples = <_VehicleSample>[
-      // Player always enters from the south in the canonical frame; its path
-      // through the box depends on the commanded maneuver.
+      // Player always enters from the south in the canonical frame; its path is
+      // the spline it is ACTUALLY following — the through-spine until it steers a
+      // turn at the box, then that turn branch — so conflicts reflect where it is
+      // really going, not the commanded maneuver it may not have taken yet.
       _VehicleSample(
         id: _playerId,
         heading: Heading.north,
-        path: playerPaths.first,
+        path: playerCar.spline ?? playerPaths.first,
         localPos: worldToLocal(playerCar.position),
         speed: playerCar.speed,
       ),
@@ -894,6 +975,10 @@ class IntersectionTile extends TileBase {
     // A permissive LEFT gives way to oncoming (the south approach, as the
     // all-way-stop fail-to-yield exemption also encodes). Waiting for a gap is
     // rational while an oncoming car is approaching or in the box.
+    // Keyed off the COMMANDED [maneuver] (intent), not [_committedExit]: this is a
+    // road-block LENIENCY (don't fault a rational wait), and the player waits at the
+    // line to turn left BEFORE crossing the tap that commits the exit — so intent is
+    // the right signal here. The left-turn FAULTS instead key off _committedExit.
     final oncomingPresent = maneuver == Maneuver.left &&
         npcs.any((n) {
           if (n.laneIndex != Heading.south.index || n.spline == null) {
@@ -930,7 +1015,11 @@ class IntersectionTile extends TileBase {
   ///     to be "cut off" anyway, so this gate just makes the rule explicit.
   void _checkLeftYieldToOncoming(PlayerCar playerCar,
       {required bool requireRightOfWay}) {
-    if (maneuver != Maneuver.left || _yieldViolationFired) return;
+    // Key off the COMMITTED exit (the spline the player actually steered onto), not
+    // the commanded [maneuver]: a player told to turn left who instead goes straight
+    // must not fire a left-turn fault. The exit commits at the tap, just as the car
+    // begins crossing oncoming — exactly when the cut-off can happen.
+    if (_committedExit != Maneuver.left || _yieldViolationFired) return;
     if (playerCar.speed <= kStopSpeedThreshold) return; // waiting isn't a fault
 
     for (final npc in npcs) {
@@ -1435,7 +1524,7 @@ class IntersectionTile extends TileBase {
       // isn't a fault. So oncoming cars (whether going straight or turning
       // right into the same exit) don't trigger a fail-to-yield on a left turn;
       // only actually colliding does. Cross-traffic still counts.
-      if (maneuver == Maneuver.left && o.heading == Heading.south) continue;
+      if (_committedExit == Maneuver.left && o.heading == Heading.south) continue;
       // A conflicting car past the box centre, or gone, is on its way out —
       // pulling out behind it as it clears is normal, not a fail-to-yield (the
       // lenient past-centre test, not the strict straight-only `_isClearing`, so

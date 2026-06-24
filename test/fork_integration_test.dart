@@ -11,10 +11,11 @@ import 'package:traffic_game/pedestrians/pedestrian.dart';
 import 'package:traffic_game/tiles/tile_manager.dart';
 import 'package:traffic_game/tiles/tile_registry.dart';
 import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
+import 'package:traffic_game/tiles/definitions/intersection_tile.dart';
 
 /// End-to-end through the REAL [TileManager] (the standalone fork tests drive the
 /// player directly; this one runs the manager's per-frame `_checkPlayerBranch` →
-/// `branchToTake` → `commitFork` glue inside `tm.update`). It pins the rule the user
+/// `branchToCommit` → `commitFork` glue inside `tm.update`). It pins the rule the user
 /// cares about: the turn is decided ONLY by the live finger as you CROSS the tap —
 /// lift the wheel before the turn and you stay on the spine you entered (straight,
 /// then hand off), regardless of any residual lean; hold it and you take the turn.
@@ -24,6 +25,7 @@ void main() {
     TestWidgetsFlutterBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(SystemChannels.platform, (_) async => null);
     IntersectionLightTile.register();
+    IntersectionTile.register();
   });
   tearDown(InputState.instance.reset);
 
@@ -125,5 +127,48 @@ void main() {
     expect(reachedOuter, isTrue, reason: 'the held-right merge reaches the outer spine');
     expect(maxJump, lessThan(4),
         reason: 'no seam dead-band snap through the real manager merge');
+  });
+
+  test('1-lane intersection: a LATE right steer at the box still turns (real manager)',
+      () {
+    // The exact reported regression, through the REAL tm.update → _checkPlayerBranch →
+    // branchToCommit → commitFork (not a replicated helper — that one passed while the
+    // game was 100% broken). Drive the 1-lane intersection and steer RIGHT only as the
+    // car REACHES the box (the natural late lean). With the old single-point tap this
+    // was impossible (the tap was consumed ~80u before the box); the commit ZONE fixes
+    // it. Commanded maneuver is irrelevant — both turns are always offered.
+    final player = PlayerCar();
+    final tm = TileManager(
+      playerCar: player,
+      world: World(),
+      pedestrians: <Pedestrian>[],
+      ambientPedestrians: <Pedestrian>[],
+      testMode: TileType.intersection4way,
+    );
+    tm.bootstrap();
+    InputState.instance.setGasLevel(1.0);
+
+    final tile = tm.activeTile as IntersectionTile;
+    final rightTurn = tile.turnBranch(Maneuver.right);
+    var leaned = false;
+    var took = false;
+    for (int i = 0; i < 1500; i++) {
+      player.speed = kmhToUnits(30); // pin → always reaches the box, never grade-stopped
+      final local = tile.worldToLocal(player.position);
+      if (local.y < 710) {
+        InputState.instance.setLaneSteer(200); // steer RIGHT, late, AT the box mouth
+        leaned = true;
+      }
+      player.update(1 / 60);
+      tm.update(1 / 60);
+      if (identical(player.spline, rightTurn)) {
+        took = true;
+        break;
+      }
+    }
+    expect(leaned, isTrue, reason: 'the car reached the box and steered');
+    expect(took, isTrue,
+        reason: 'a late right steer at the box takes the right turn through the real '
+            'manager — the regression the user hit ("100% can not turn right")');
   });
 }

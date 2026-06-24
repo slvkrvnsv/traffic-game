@@ -260,36 +260,23 @@ void main() {
       expect(tile.playerBranches(tile.branch(inner: true, m: Maneuver.left)), isEmpty);
     });
 
-    test('crossing a tap while leaning takes the turn; neutral or wrong-way stays straight',
+    test('branchSide reads which way each tap turns (left taps left, right taps right)',
         () {
       final tile = place();
-      final spine = tile.approach(inner: true);
-      final branches = tile.playerBranches(spine);
-      final nearLeft = tile.branch(inner: true, m: Maneuver.left);
-      final farLeft = tile.farBranch(m: Maneuver.left);
-      final dNear = spine.distanceAtNearest(nearLeft.evaluate(0.0)); // ~780
-      final dFar = spine.distanceAtNearest(farLeft.evaluate(0.0)); // ~860
-      // Cross the NEAR tap leaning LEFT → near-left; neutral or right → stay straight.
-      expect(TileManager.branchToTake(spine, branches, dNear - 8, dNear + 8, -1),
-          same(nearLeft));
-      expect(
-          TileManager.branchToTake(spine, branches, dNear - 8, dNear + 8, 0), isNull);
-      expect(
-          TileManager.branchToTake(spine, branches, dNear - 8, dNear + 8, 1), isNull);
-      // Skip the near tap (no lean there), then lean LEFT across the FAR tap → far-left.
-      expect(TileManager.branchToTake(spine, branches, dFar - 8, dFar + 8, -1),
-          same(farLeft));
-      // Between taps with a lean held but nothing crossed → nothing fires.
-      expect(TileManager.branchToTake(spine, branches, dNear + 8, dFar - 8, -1), isNull);
-      // Outer mirror: lean RIGHT across the near-right tap → near-right.
+      final inner = tile.approach(inner: true);
       final outer = tile.approach(inner: false);
-      final outBranches = tile.playerBranches(outer);
-      final nearRight = tile.branch(inner: false, m: Maneuver.right);
-      final dNR = outer.distanceAtNearest(nearRight.evaluate(0.0));
-      expect(TileManager.branchToTake(outer, outBranches, dNR - 8, dNR + 8, 1),
-          same(nearRight));
+      // Left turns hang on the inner spine and curve LEFT (−1); right turns on the
+      // outer spine and curve RIGHT (+1) — near and far of a side share the side.
+      expect(TileManager.branchSide(inner, tile.branch(inner: true, m: Maneuver.left)),
+          -1);
+      expect(TileManager.branchSide(inner, tile.farBranch(m: Maneuver.left)), -1);
       expect(
-          TileManager.branchToTake(outer, outBranches, dNR - 8, dNR + 8, -1), isNull);
+          TileManager.branchSide(outer, tile.branch(inner: false, m: Maneuver.right)),
+          1);
+      expect(TileManager.branchSide(outer, tile.farBranch(m: Maneuver.right)), 1);
+      // The lean → commit ZONE itself (a lean toward a tap takes that turn; neutral or
+      // wrong-way stays straight; skip-near → far) is driven end-to-end on the real
+      // PlayerCar in intersection_fork_test.
     });
   });
 

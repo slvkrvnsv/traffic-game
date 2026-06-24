@@ -42,9 +42,16 @@ void main() {
   });
 
   group('TileConnector placement', () {
-    test('straight tile after a right-turn intersection heads east', () {
+    test('a steered right turn rotates the corridor east (late-bound exit)', () {
       final inter = IntersectionTile(maneuver: Maneuver.right);
       inter.place(worldPosition: Vector2.zero(), orientation: 0.0);
+      // Late-bound: a freshly-placed intersection exits STRAIGHT (north) — the
+      // exit only commits when the player steers the turn at the box ("miss =
+      // straight"), exactly like the 2-lane light.
+      expectVector(inter.worldExitDirection, Vector2(0, -1));
+
+      // Player steers the right turn at the box → the exit commits east.
+      inter.debugCommitExit(Maneuver.right);
       expectVector(inter.worldExitDirection, Vector2(1, 0));
 
       final next = StraightTile();
@@ -59,15 +66,21 @@ void main() {
       expectVector(next.worldEntry, inter.worldExit);
       expectVector(next.worldExitDirection, Vector2(1, 0));
 
-      // Player spline continuity across the seam (t=1 on prev == t=0 on next).
-      final prevEnd = inter.localToWorld(inter.playerPaths.first.evaluate(1.0));
+      // Player spline continuity across the seam: the committed turn BRANCH's exit
+      // (t=1) lands on the next tile's entry (t=0) — through-spine is straight, so
+      // the seam continuity belongs to the branch the player actually took.
+      final prevEnd =
+          inter.localToWorld(inter.turnBranch(Maneuver.right).evaluate(1.0));
       final nextStart = next.localToWorld(next.playerPaths.first.evaluate(0.0));
       expectVector(nextStart, prevEnd, eps: 0.5);
     });
 
-    test('left turn rotates the corridor counter-clockwise', () {
+    test('a steered left turn rotates the corridor counter-clockwise', () {
       final inter = IntersectionTile(maneuver: Maneuver.left);
       inter.place(worldPosition: Vector2.zero(), orientation: 0.0);
+      expectVector(inter.worldExitDirection, Vector2(0, -1)); // straight until steered
+
+      inter.debugCommitExit(Maneuver.left);
 
       final next = StraightTile();
       final placement = TileConnector.computeNextPlacement(inter, next);

@@ -504,73 +504,74 @@ class TileManager extends Component {
     }
   }
 
-  // The spine the player is following + their distance on it last frame, so a TURN
-  // TAP fires the instant the player CROSSES it (not every frame after). Reset
-  // whenever the spline changes (merge / turn / hand-off), so a merge that joins a
-  // spine PAST a tap can't retro-trigger it.
-  Spline? _branchSpline;
-  double _branchBaseDist = 0.0;
-
-  /// Resolve in-tile TURN TAPS each frame. A branch spline hangs off a point on the
-  /// player's current through-lane spine (its start sits ON the spine). When the
-  /// player crosses that tap while leaning toward the branch's side, divert onto it
-  /// (position-continuous — coincident point — carrying the lean, haptic). Cross it
-  /// neutral → stay straight on the spine. This is the universal "take the turn"
-  /// primitive; the spine stays whole so the merge ([_updatePlayerLaneChange] / the
-  /// player's SLIDE) never sees a seam.
+  /// Resolve in-tile TURN TAPS each frame. A turn branch hangs off the player's
+  /// current through-lane spine — its start sits ON the spine, then it arcs away to a
+  /// connected road. The player takes it by leaning toward its side while the branch
+  /// still HUGS the lane: a commit ZONE (the lead-in plus the early arc, up to
+  /// [kTurnCommitReach] off the lane), not one knife-edge point at the branch start.
+  /// The switch projects onto the NEAREST point of the branch, so a turn steered as you
+  /// REACH the intersection works — the natural late lean — instead of only a precise
+  /// lean across the tap. Lean neutral → stay straight. The spine stays whole, so the
+  /// merge (the player's SLIDE) never sees a seam.
   void _checkPlayerBranch() {
     final tile = activeTile;
     if (tile == null) return;
     final cur = playerCar.spline;
     if (cur == null) return;
-    if (!identical(cur, _branchSpline)) {
-      _branchSpline = cur;
-      _branchBaseDist = playerCar.distanceTravelled;
-      return; // need two samples to detect a crossing
-    }
-    final from = _branchBaseDist;
-    final to = playerCar.distanceTravelled;
-    _branchBaseDist = to;
-    final chosen =
-        branchToTake(cur, tile.playerBranches(cur), from, to, playerCar.leanSign);
-    if (chosen == null) return;
+    final commit = branchToCommit(
+        playerCar, cur, tile.playerBranches(cur), playerCar.leanSign);
+    if (commit == null) return;
     // Haptic on a TURN — diverting off the through lane should buzz.
-    playerCar.commitFork(
-        chosen, tile.playerLaneMates(chosen), tile.position, tile.orientation,
-        haptic: TileBase.pathTurns(chosen));
+    playerCar.commitFork(commit.branch, tile.playerLaneMates(commit.branch),
+        tile.position, tile.orientation,
+        startDistance: commit.startDistance,
+        haptic: TileBase.pathTurns(commit.branch));
   }
 
-  /// The branch (if any) the player should divert onto this frame: among the branches
-  /// hung on [spine] whose tap distance was CROSSED in (fromDist, toDist], the NEAREST
-  /// one whose turn side matches the held [lean] (-1 left / +1 right; 0 never diverts).
-  /// A branch's side is the signed turn of its overall direction (start→end chord)
-  /// relative to the spine's heading — so a left-curving branch needs a left lean.
-  /// Pure (no manager state) → unit-tested directly on the real splines.
+  /// Which way [branch] turns off [spine]: −1 (left), +1 (right), 0 (straight). The
+  /// signed turn of the branch's overall direction (start→end chord) vs the spine's
+  /// heading, so a left-curving branch needs a left lean. Pure → unit-tested.
   @visibleForTesting
-  static Spline? branchToTake(Spline spine, List<Spline> branches, double fromDist,
-      double toDist, int lean) {
-    if (branches.isEmpty || toDist <= fromDist || lean == 0) return null;
+  static int branchSide(Spline spine, Spline branch) {
     final ref = spine.tangent(1.0);
-    int sideOf(Spline b) {
-      final d = b.evaluate(1.0) - b.evaluate(0.0);
-      if (d.length < 1e-6) return 0;
-      d.normalize();
-      final s = atan2(ref.x * d.y - ref.y * d.x, ref.x * d.x + ref.y * d.y);
-      return s < 0 ? -1 : (s > 0 ? 1 : 0);
-    }
+    final d = branch.evaluate(1.0) - branch.evaluate(0.0);
+    if (d.length < 1e-6) return 0;
+    d.normalize();
+    final s = atan2(ref.x * d.y - ref.y * d.x, ref.x * d.x + ref.y * d.y);
+    return s < 0 ? -1 : (s > 0 ? 1 : 0);
+  }
 
-    Spline? chosen;
-    double chosenDist = double.infinity;
+  /// The turn the player should divert onto this frame and WHERE to join it
+  /// ([startDistance], the nearest point) — or null. Among the [branches] hung on
+  /// [spine] whose side matches the held [lean] (−1/+1; 0 never diverts), the one the
+  /// player sits CLOSEST to (smallest perpendicular offset) while that offset is still
+  /// within [kTurnCommitReach] (the branch hasn't diverged past the commit zone) and
+  /// the player is genuinely alongside it ([PlayerCar.nearestOn] non-null — not before
+  /// its start nor past its end). Nearest-point, like the merge — so the commit is a
+  /// ZONE, not a single point that gets consumed before you steer. Needs the live
+  /// player (its position) → [@visibleForTesting] so tests drive the same wiring.
+  @visibleForTesting
+  static ({Spline branch, double startDistance})? branchToCommit(
+      PlayerCar player, Spline spine, List<Spline> branches, int lean) {
+    if (lean == 0 || branches.isEmpty) return null;
+    Spline? best;
+    double bestT = 0.0;
+    double bestOffset = double.infinity;
     for (final b in branches) {
-      final d = spine.distanceAtNearest(b.evaluate(0.0));
-      if (d <= fromDist || d > toDist) continue; // not crossed this frame
-      if (sideOf(b) != lean) continue; // leaning the other way → not this turn
-      if (d < chosenDist) {
-        chosenDist = d;
-        chosen = b;
+      if (branchSide(spine, b) != lean) continue; // leaning the other way
+      final n = player.nearestOn(b);
+      if (n == null) continue; // before the branch starts, or past its end
+      final off = n.lateral.abs();
+      if (off > kTurnCommitReach) continue; // diverged past the zone — too late to hop on
+      if (off < bestOffset) {
+        bestOffset = off;
+        best = b;
+        bestT = n.t;
       }
     }
-    return chosen;
+    return best == null
+        ? null
+        : (branch: best, startDistance: bestT * best.totalLength);
   }
 
   void _handOffToNextTile() {

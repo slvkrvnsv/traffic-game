@@ -269,6 +269,18 @@ const double kLaneCommitFraction = 0.6;
 /// like crossing into the opposite lane). This is the edge-pull cap on EVERY tile
 /// now, so the lean feels the same everywhere. A feel knob.
 const double kIntentionLean = 8.0;
+/// How far a turn branch may have diverged from the through-lane (world units,
+/// perpendicular) and STILL be takeable by a lean. A turn is committed onto the
+/// NEAREST point of its branch (like a merge), so the commit isn't a single
+/// knife-edge point at the branch start — it's a ZONE spanning the branch's
+/// lead-in plus the early arc, while the branch still hugs the lane closer than
+/// this. That makes "steer the turn as you REACH the intersection" work (the
+/// natural late lean) instead of forcing a precise hard lean across one invisible
+/// point; the leftover offset at commit (≤ this) glides out via the self-centre.
+/// Pinched: must clear the branch's offset at the box mouth (~11u) so a lean AT
+/// the box still catches; small enough that the 2-lane near/far turns stay
+/// distinct. A feel knob.
+const double kTurnCommitReach = 16.0;
 /// Minimum real separation (world units) between the current lane and an
 /// adjacent one before a discrete lane-change *commit* is allowed. The car may
 /// still lean toward a closer lane, but no commit (and its haptic) fires until

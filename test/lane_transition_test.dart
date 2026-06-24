@@ -12,11 +12,13 @@ void main() {
   group('StraightOneLaneTile', () {
     final tile = StraightOneLaneTile();
 
-    test('is a single player lane on the seam, no lane changes', () {
+    test('is a single player lane on the seam; steering on but no merge', () {
       expect(tile.playerPaths.length, 1);
       expect(tile.entryAnchor.x, seamX);
       expect(tile.exitAnchor.x, seamX);
-      expect(tile.allowsLaneChange, isFalse);
+      // Steering is ON for the universal cosmetic lean, but a single lane has
+      // nothing to merge into — a drag only leans ≤kIntentionLean and snaps back.
+      expect(tile.allowsLaneChange, isTrue);
     });
 
     test('declares the straight1Lane type', () {

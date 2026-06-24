@@ -58,6 +58,12 @@ class StraightOneLaneTile extends TileBase {
   @override
   late final List<Spline> playerPaths = [_northbound(_playerX)];
 
+  /// Steering on, for the universal feel: a single lane has nothing to merge into,
+  /// so a drag only ever shows the cosmetic ≤[kIntentionLean] intention lean and
+  /// snaps back on release — the same steering as every other tile, never a merge.
+  @override
+  bool get allowsLaneChange => true;
+
   @override
   late final List<Spline> npcPaths = [
     _southbound(_oncomingX), // oncoming

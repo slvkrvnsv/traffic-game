@@ -13,7 +13,7 @@ import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
 
 /// End-to-end of the UNIVERSAL STEERING on the light intersection: drive a player up
 /// a continuous through-lane SPINE, and resolve TURN TAPS exactly as
-/// TileManager._checkPlayerBranch does (each frame, [TileManager.branchToTake] on the
+/// TileManager._checkPlayerBranch does (each frame, [TileManager.branchToCommit] on the
 /// current spline; a crossed tap on the lean side diverts onto that turn). The spine is
 /// ONE whole spline, so the parallel-lane SLIDE (merge) is just the player's ordinary
 /// offset lane-change — no chopped stubs, no seam. This is the frame-stepped wiring the
@@ -52,8 +52,6 @@ void main() {
     int maxFrames = 2500,
     bool Function(Spline cur)? stopWhen,
   }) {
-    Spline? branchSpline;
-    double baseDist = 0.0;
     for (int i = 0; i < maxFrames; i++) {
       if (p.hasReachedEnd) break;
       if (stopWhen != null && stopWhen(p.spline!)) break;
@@ -62,19 +60,13 @@ void main() {
       p.setLaneChangeAllowed(tile.allowsLaneChangeAt(local));
       p.update(1 / 60);
       final cur = p.spline!;
-      if (!identical(cur, branchSpline)) {
-        branchSpline = cur;
-        baseDist = p.distanceTravelled;
-        continue; // need two samples to detect a crossing
-      }
-      final from = baseDist;
-      final to = p.distanceTravelled;
-      baseDist = to;
-      final chosen = TileManager.branchToTake(
-          cur, tile.playerBranches(cur), from, to, p.leanSign);
-      if (chosen != null) {
-        p.commitFork(chosen, tile.playerLaneMates(chosen), Vector2.zero(), 0.0,
-            haptic: TileBase.pathTurns(chosen));
+      final commit = TileManager.branchToCommit(
+          p, cur, tile.playerBranches(cur), p.leanSign);
+      if (commit != null) {
+        p.commitFork(commit.branch, tile.playerLaneMates(commit.branch),
+            Vector2.zero(), 0.0,
+            startDistance: commit.startDistance,
+            haptic: TileBase.pathTurns(commit.branch));
       }
     }
     return p.spline!;
@@ -134,20 +126,24 @@ void main() {
         reason: 'merged to the outer spine, then took its right turn');
   });
 
-  test('skip the near tap, lean at the deeper one → the FAR (other-lane) turn', () {
+  test('skip the near turn (neutral through its reach), lean at the FAR tap → far turn',
+      () {
     for (final inner in [true, false]) {
       final tile = place();
       final p = onApproach(tile, inner: inner);
+      final m = inner ? Maneuver.left : Maneuver.right;
       final dir = inner ? -200.0 : 200.0; // lean toward the turn
-      final nearTapY = inner ? 860.0 : 980.0; // skip THIS tap (stay neutral here)
       final spine = tile.approach(inner: inner);
-      // Only lean AFTER passing the near tap → the second (deep) tap takes it. Stop the
-      // drive the instant we divert onto a turn — otherwise the still-held lean would
-      // merge us between the two exit lanes and mask which tap fired.
-      final end = drive(p, tile, (y) => y < nearTapY - 6 ? dir : 0.0,
+      // With the commit ZONE, "skip the near turn" means staying NEUTRAL through its
+      // whole reach (its lead-in + early arc), not just past its tap point — then lean
+      // only as we reach the FAR tap, so the far turn is what fires. Stop the drive the
+      // instant we divert (the still-held lean would otherwise merge between the exit
+      // lanes and mask which turn we took).
+      final farTapY = tile.farBranch(m: m).evaluate(0.0).y;
+      final end = drive(p, tile, (y) => y < farTapY + 12 ? dir : 0.0,
           stopWhen: (cur) => !identical(cur, spine));
-      expect(end, same(tile.farBranch(m: inner ? Maneuver.left : Maneuver.right)),
-          reason: 'neutral at the near tap + lean at the far tap → far turn');
+      expect(end, same(tile.farBranch(m: m)),
+          reason: 'neutral through the near turn + lean at the far tap → far turn');
       InputState.instance.reset();
     }
   });
@@ -266,8 +262,6 @@ void main() {
         allowLaneChange: true);
     p.position = p.splinePosition;
 
-    Spline? branchSpline;
-    double baseDist = 0.0;
     var prev = p.position.clone();
     var maxJump = 0.0;
     var tookTurn = false;
@@ -278,17 +272,13 @@ void main() {
       p.setLaneChangeAllowed(tile.allowsLaneChangeAt(local));
       p.update(1 / 60);
       final cur = p.spline!;
-      if (!identical(cur, branchSpline)) {
-        branchSpline = cur;
-        baseDist = p.distanceTravelled;
-      } else {
-        final chosen = TileManager.branchToTake(
-            cur, tile.playerBranches(cur), baseDist, p.distanceTravelled, p.leanSign);
-        baseDist = p.distanceTravelled;
-        if (chosen != null) {
-          p.commitFork(chosen, tile.playerLaneMates(chosen), Vector2.zero(), 0.0,
-              haptic: TileBase.pathTurns(chosen));
-        }
+      final commit = TileManager.branchToCommit(
+          p, cur, tile.playerBranches(cur), p.leanSign);
+      if (commit != null) {
+        p.commitFork(commit.branch, tile.playerLaneMates(commit.branch),
+            Vector2.zero(), 0.0,
+            startDistance: commit.startDistance,
+            haptic: TileBase.pathTurns(commit.branch));
       }
       if (identical(p.spline, nearRight)) tookTurn = true;
       final a = p.angle;

@@ -331,6 +331,13 @@ class PlayerCar extends CarBase {
         : null;
   }
 
+  /// The nearest point on [lane] to the player right now — its progress [t] and the
+  /// signed perpendicular offset — or null when the player is past [lane]'s extent
+  /// (before its start or beyond its end). Public seam for the turn-commit ZONE
+  /// ([TileManager.branchToCommit]): a turn is taken by projecting onto its branch,
+  /// the same nearest-point logic the parallel-lane merge uses.
+  ({double t, double lateral})? nearestOn(Spline lane) => _nearestLateral(lane);
+
   /// The point on [lane] NEAREST the player's current centre: its progress [t] and
   /// the signed lateral offset (perp·(lanePoint − me); + = right of travel). Returns
   /// null when the nearest point is an endpoint — i.e. the player is past [lane]'s
@@ -434,21 +441,32 @@ class PlayerCar extends CarBase {
     return 0;
   }
 
-  /// Commit a JUNCTION fork onto [branch] (chosen by TileManager from the lean):
-  /// [branch] starts exactly where the current spline ends (coincident node), so
-  /// starting it at distance 0 keeps the world position continuous — the lean
-  /// ([lateralOffset]) carries straight through. Reset the lane set to [laneOptions]
-  /// (the branch's siblings) and click. No offset rebase — that's the whole point of
-  /// the discrete node (versus the old mid-approach switch that fought the cap).
+  /// Commit a TURN onto [branch] (chosen by TileManager from the lean): switch the
+  /// followed spline to [branch] at [startDistance] — the NEAREST point on it, so the
+  /// turn is takeable anywhere the branch still hugs the lane (a commit ZONE, not one
+  /// knife-edge point at the branch start). The car's WORLD position is kept continuous
+  /// by rebasing the lean against the branch; any small leftover offset (the branch had
+  /// diverged a little by the commit point) then glides out via the self-centre — so a
+  /// turn taken late slides smoothly onto the branch instead of snapping. Reset the lane
+  /// set to [laneOptions] (the branch's siblings) and click.
   void commitFork(
     Spline branch,
     List<Spline> laneOptions,
     Vector2 tileOffset,
     double tileAngle, {
+    double startDistance = 0.0,
     bool haptic = true,
   }) {
+    final worldBefore = splinePosition; // actual world point (centre + current lean)
     assignSpline(branch,
-        startDistance: 0.0, worldOffset: tileOffset, worldAngle: tileAngle);
+        startDistance: startDistance,
+        worldOffset: tileOffset,
+        worldAngle: tileAngle);
+    // Rebase the lean so the world position doesn't jump across the switch; the
+    // self-centre glides the (small) residual to the branch centreline.
+    final a = splineAngle;
+    final perp = Vector2(-math.sin(a), math.cos(a));
+    lateralOffset = (worldBefore - splineCentrePosition).dot(perp);
     setLaneOptions(laneOptions, tileOffset, tileAngle, allowLaneChange: true);
     _steerConsumed = false;
     // Click only when the fork is a TURN (or a merge, handled in _commitToAdjacent):
