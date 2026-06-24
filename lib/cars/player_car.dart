@@ -342,10 +342,18 @@ class PlayerCar extends CarBase {
         bt = t;
       }
     }
-    if (bt <= 0.0 || bt >= 1.0) return null; // nearest is an endpoint → past the lane
+    // Refine (ternary on the smooth distance) for the EXACT nearest t, THEN judge "past
+    // the lane" from that — not the coarse argmin (which snaps to the t=0/1 endpoint
+    // within 1/n of an end, falsely nulling the last ~4% before a tile seam → a mid-merge
+    // car saw its neighbour vanish and the clamp slammed it sideways) and NOT the endpoint
+    // tangents (a sharply-curved turn lane rotates 90°, so a point abreast of its straight
+    // run reads as "before the north-facing start" and the right post-turn merge went
+    // dead). The nearest is genuinely PAST the lane only when it pins to a boundary AND the
+    // distance is still falling toward it; an interior nearest — even a hair from an end,
+    // or on a 90°-turned lane — is adjacent.
     double lo = (bt - 1.0 / n).clamp(0.0, 1.0);
     double hi = (bt + 1.0 / n).clamp(0.0, 1.0);
-    for (int k = 0; k < 12; k++) {
+    for (int k = 0; k < 16; k++) {
       final m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3;
       if (d2at(m1) < d2at(m2)) {
         hi = m2;
@@ -354,6 +362,22 @@ class PlayerCar extends CarBase {
       }
     }
     bt = (lo + hi) / 2;
+    // "Past the lane" only when the refined (global) nearest PINS to an end AND the
+    // distance is still falling toward it — judged with that end's LOCAL tangent. So a
+    // 90°-turned lane (nearest interior on its straight run) stays adjacent (the right
+    // post-turn merge), a car merely abreast of an end stays adjacent (the last 4% before
+    // a tile seam), and only a car genuinely BEYOND an end is dropped. Endpoint tangents
+    // alone failed on curves; a coarse-argmin or eps cutoff failed at the seam.
+    const eps = 1e-3;
+    final cosA = math.cos(_laneTileAngle), sinA = math.sin(_laneTileAngle);
+    double alongAt(double t) {
+      final lt = lane.tangent(t);
+      final tan = Vector2(lt.x * cosA - lt.y * sinA, lt.x * sinA + lt.y * cosA);
+      return (_laneWorldPointAtT(lane, t) - me).dot(tan);
+    }
+
+    if (bt >= 1.0 - eps && alongAt(1.0) < 0) return null; // pinned beyond the far end
+    if (bt <= eps && alongAt(0.0) > 0) return null; // pinned before the near start
     final a = splineAngle;
     final perp = Vector2(-math.sin(a), math.cos(a));
     return (t: bt, lateral: (_laneWorldPointAtT(lane, bt) - me).dot(perp));

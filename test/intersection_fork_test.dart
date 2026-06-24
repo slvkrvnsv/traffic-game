@@ -218,4 +218,29 @@ void main() {
     });
     expect(merged, isTrue, reason: 'two parallel whole spines → merge must work');
   });
+
+  test('after a RIGHT turn you can ALSO merge to the neighbouring exit lane', () {
+    // The mirror of the left case — and the one that was DEAD: the right turn lanes are
+    // staggered (exit y=940 vs sibling node y=900), so a "past the lane?" guard using the
+    // sibling's north-facing START tangent read the player (abreast of its EAST straight)
+    // as "before the start" and nulled the merge. Left only worked by a coincidence (its
+    // exit y equalled the sibling's node y → zero projection).
+    final tile = place();
+    final p = onApproach(tile, inner: false);
+    final nearRight = tile.branch(inner: false, m: Maneuver.right);
+    drive(p, tile, (_) => 200, stopWhen: (cur) => identical(cur, nearRight));
+    expect(p.spline, same(nearRight));
+
+    // far-right is the neighbouring east-bound exit lane, to the NORTH (= left when
+    // heading east) — drag left and we should slide onto it.
+    final sibling = tile.farBranch(m: Maneuver.right);
+    expect(tile.playerLaneMates(p.spline!), contains(sibling));
+    var merged = false;
+    drive(p, tile, (_) => -200, stopWhen: (cur) {
+      if (identical(cur, sibling)) merged = true;
+      return merged;
+    });
+    expect(merged, isTrue,
+        reason: 'the right post-turn merge must work too (curved-lane projection fix)');
+  });
 }
