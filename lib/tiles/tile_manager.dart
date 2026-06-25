@@ -230,7 +230,7 @@ class TileManager extends Component {
     // Carry the player's FULL world position (centreline + lean) across the seam, so a
     // mid-merge hand-off stays put: rebase lateralOffset against the NEW lane instead of
     // letting the raw offset apply to a fresh centreline. Every other spline switch
-    // already does this (_commitToAdjacent / _switchSplineSeamless); the hand-off was the
+    // already does this (_commitToAdjacent / commitFork); the hand-off was the
     // one that didn't. A settled car has offset 0 → no-op; only a car mid-change moves.
     // Bootstrap (matchLane false) has no prior position, so skip it.
     final worldBefore = matchLane ? playerCar.splinePosition : null;
@@ -446,10 +446,6 @@ class TileManager extends Component {
     if (tile == null) return;
     final local = tile.worldToLocal(playerCar.position);
     playerCar.setLaneChangeAllowed(tile.allowsLaneChangeAt(local));
-    playerCar.setForkTargets(
-      tile.splineSteerTargetAt(local, -1),
-      tile.splineSteerTargetAt(local, 1),
-    );
   }
 
   void _updateNpcSensors(double dt) {

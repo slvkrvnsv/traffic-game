@@ -124,20 +124,6 @@ class PlayerCar extends CarBase {
   /// player drags afresh.
   bool _steerConsumed = false;
 
-  /// One-shot fork spline-steer targets for the current position (set per-frame by
-  /// TileManager from [TileBase.splineSteerTargetAt]): the spline a left/right drag
-  /// switches onto where two lanes are still near-coincident but splitting/merging
-  /// — the lane-transition connector's merge. (Junctions no longer use this; they
-  /// fork at a discrete node via [commitFork], driven by TileManager.)
-  Spline? _forkLeft;
-  Spline? _forkRight;
-
-  /// Per-frame one-shot fork targets from the active tile (connector merge).
-  void setForkTargets(Spline? left, Spline? right) {
-    _forkLeft = left;
-    _forkRight = right;
-  }
-
   void _updateLaneChange(double dt) {
     final input = InputState.instance;
 
@@ -146,42 +132,20 @@ class PlayerCar extends CarBase {
     // instead of being shoved further. Lifting the finger re-arms it.
     if (!input.laneSteerActive) _steerConsumed = false;
 
-    final inFork = _forkLeft != null || _forkRight != null;
-
-    if (inFork &&
-        _laneChangeAllowed &&
-        !_steerConsumed &&
-        input.laneSteerActive) {
-      // One-shot fork (lane-transition connector): a drag switches WHICH spline we
-      // follow (seamless — the lanes are near-coincident) and the offset
-      // self-centres onto it. The offset-based lean is skipped (see [blockOffset])
-      // so the cap, which collapses to the converging lane's separation, can't
-      // wobble. (Junction forks are handled at a discrete node by TileManager via
-      // [commitFork], not here.)
-      final px = input.laneSteerPx;
-      final target = px > kLaneSteerDeadzone
-          ? _forkRight
-          : (px < -kLaneSteerDeadzone ? _forkLeft : null);
-      if (target != null && spline != null && !identical(spline, target)) {
-        _switchSplineSeamless(target);
-        _steerConsumed = true;
-      }
-    }
-
-    // The offset lean/merge runs for ordinary roads and junctions: a drag toward a
-    // parallel lane merges; a drag with no lane that way leans ≤[kIntentionLean] to
-    // show intention (the side the next fork node will pick). Skipped only for the
-    // connector's one-shot fork ([blockOffset]). A merge commit sets [_steerConsumed]
-    // so one drag = one decisive lane change (the car then settles on the new lane,
-    // not edge-pulling past it). Holding the finger THROUGH a merge therefore stops
-    // showing a visible lean — but the fork still picks correctly: [leanSign] falls
-    // back to the live drag direction when the offset has settled, so "keep dragging
-    // right after I merged → I go right" holds at the node without re-arming the lean
-    // (re-arming reintroduced the connector's nose-snap wobble).
-    final blockOffset = inFork;
+    // The offset lean/merge runs on EVERY tile — the universal SLIDE primitive: a
+    // drag toward a parallel lane merges (equal-width road lanes, an intersection's
+    // two through lanes, AND the lane-transition connector's tapering merge/widen
+    // lane all run this same offset-cap-commit code, sharing [_nearestLateral] so a
+    // staggered/converging lane is handled exactly like parallel ones); a drag with
+    // no lane that way leans ≤[kIntentionLean] to show intention (the side the next
+    // fork node will pick). A merge commit sets [_steerConsumed] so one drag = one
+    // decisive lane change (the car then settles on the new lane, not edge-pulling
+    // past it). Holding the finger THROUGH a merge stops showing a visible lean — but
+    // a junction fork still picks correctly: [leanSign] falls back to the live drag
+    // direction when the offset has settled, so "keep dragging right after I merged →
+    // I go right" holds at the node.
     final steerActive = input.laneSteerActive &&
         _laneChangeAllowed &&
-        !blockOffset &&
         !_steerConsumed;
 
     // The lean cap = the ACTUAL separation to the adjacent lane (so a diverging /
@@ -274,14 +238,10 @@ class PlayerCar extends CarBase {
     //    12u in one frame. The nose is rolled to straight by step 1's edge-settle, so
     //    the clamp NO LONGER zeroes the heading — that instant zero was the nose-snap
     //    AND the wheels-turned-while-the-car-tracks-straight bug.
-    // Skipped in the merge tile's one-shot fork ([blockOffset]): there the spline
-    // switch IS the lane change, so a cap clamp would just wobble the nose.
-    if (!blockOffset) {
-      if (lateralOffset > maxRight && lateralOffset > offsetBefore) {
-        lateralOffset = math.max(maxRight, offsetBefore);
-      } else if (lateralOffset < -maxLeft && lateralOffset < offsetBefore) {
-        lateralOffset = math.min(-maxLeft, offsetBefore);
-      }
+    if (lateralOffset > maxRight && lateralOffset > offsetBefore) {
+      lateralOffset = math.max(maxRight, offsetBefore);
+    } else if (lateralOffset < -maxLeft && lateralOffset < offsetBefore) {
+      lateralOffset = math.min(-maxLeft, offsetBefore);
     }
 
     // 5. Commit once the car has arced past [kLaneCommitFraction] of the way to
@@ -472,39 +432,6 @@ class PlayerCar extends CarBase {
     // Click only when the fork is a TURN (or a merge, handled in _commitToAdjacent):
     // sliding straight through a junction shouldn't buzz.
     if (haptic) HapticFeedback.selectionClick();
-  }
-
-  /// Spline-steer onto [target]: switch the followed spline while keeping the
-  /// car's world position continuous (rebase [lateralOffset] by the lanes'
-  /// current perpendicular separation). At a fork the lanes are near-coincident
-  /// so the rebase is tiny; the self-centre then slides the car onto [target].
-  void _switchSplineSeamless(Spline target) {
-    final current = spline;
-    if (current == null) return;
-    final a = splineAngle;
-    final perp = Vector2(-math.sin(a), math.cos(a));
-    // Preserve ARC LENGTH, not fraction. The branches of a turn fork share a
-    // common prefix (the approach) but can differ in total length — a turn branch
-    // is longer than its straight. Matching distanceTravelled keeps the car at the
-    // same physical point on the shared prefix; switching by fraction
-    // (currentT × targetLen) would jump it forward onto the longer branch (~89u
-    // for the light intersection's left fork). The merge/widen fork's two lanes
-    // differ by <6u in length (a gentle taper), so this barely moves its switch
-    // point — if anything it's slightly more continuous, since the old
-    // fraction-based switch had a ~5u forward jump the arc-length one removes.
-    final d = distanceTravelled;
-    final tTarget =
-        target.totalLength <= 0 ? 0.0 : (d / target.totalLength).clamp(0.0, 1.0);
-    final sep = (_laneWorldPointAtT(target, tTarget) - _laneWorldPoint(current))
-        .dot(perp);
-    assignSpline(
-      target,
-      startDistance: d,
-      worldOffset: _laneTileOffset,
-      worldAngle: _laneTileAngle,
-    );
-    lateralOffset -= sep; // keep the world position continuous across the switch
-    HapticFeedback.selectionClick();
   }
 
   /// Switch the spline to the adjacent lane on [direction] (+1 right / -1 left)

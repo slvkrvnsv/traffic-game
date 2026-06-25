@@ -10,8 +10,10 @@ import 'package:traffic_game/input/input_state.dart';
 import 'package:traffic_game/pedestrians/pedestrian.dart';
 import 'package:traffic_game/tiles/tile_manager.dart';
 import 'package:traffic_game/tiles/tile_registry.dart';
+import 'package:traffic_game/tiles/scenarios/scenario_base.dart';
 import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
 import 'package:traffic_game/tiles/definitions/intersection_tile.dart';
+import 'package:traffic_game/tiles/definitions/lane_transition_tile.dart';
 
 /// End-to-end through the REAL [TileManager] (the standalone fork tests drive the
 /// player directly; this one runs the manager's per-frame `_checkPlayerBranch` →
@@ -26,6 +28,7 @@ void main() {
         .setMockMethodCallHandler(SystemChannels.platform, (_) async => null);
     IntersectionLightTile.register();
     IntersectionTile.register();
+    LaneTransitionTile.register();
   });
   tearDown(InputState.instance.reset);
 
@@ -170,5 +173,62 @@ void main() {
     expect(took, isTrue,
         reason: 'a late right steer at the box takes the right turn through the real '
             'manager — the regression the user hit ("100% can not turn right")');
+  });
+
+  test('connector MERGE through the REAL manager: drag-left from the ending lane '
+      'commits via the universal slide AND the merge grading clears', () {
+    // The connector's bespoke one-shot fork is gone — it now rides the SAME
+    // playerLaneMates → offset-merge wiring as every multi-lane tile. Prove it
+    // through the REAL tm.update() (not the replicated step() helper in
+    // lane_change_diverge_test, which hand-pushes the gate and can't exercise the
+    // manager glue — exactly the kind of replicated test that once passed while the
+    // game was broken). Put the player on the ending (outer) lane at the wide entry
+    // as a seam hand-off from a 2-lane straight would, hold a left drag, and assert
+    // the universal merge commits onto the inner (surviving) lane AND MergeScenario
+    // clears (passed) once the player is in past the pinch.
+    final player = PlayerCar();
+    final tm = TileManager(
+      playerCar: player,
+      world: World(),
+      pedestrians: <Pedestrian>[],
+      ambientPedestrians: <Pedestrian>[],
+      testMode: TileType.laneMerge,
+    );
+    tm.bootstrap();
+
+    final tile = tm.activeTile as LaneTransitionTile;
+    final inner = tile.playerPaths[0];
+    final outer = tile.playerPaths[1];
+    // Bootstrap drops the player on the inner lane; move them onto the ending
+    // (outer) lane at the wide entry — where a hand-off from the outer lane of a
+    // preceding 2-lane straight would leave them.
+    player.assignSpline(outer,
+        startDistance: 60,
+        worldOffset: tile.position,
+        worldAngle: tile.orientation);
+    player.setLaneOptions(tile.playerLaneMates(outer), tile.position,
+        tile.orientation, allowLaneChange: true);
+    player.position = player.splinePosition;
+
+    InputState.instance.setGasLevel(1.0);
+    var committed = false;
+    for (int i = 0; i < 3000; i++) {
+      player.speed = kmhToUnits(30); // pin → always reaches the end of the taper
+      InputState.instance.setLaneSteer(-200); // hold LEFT — merge in
+      // Isolate the player-merge grading from any NPC cut-off path: NPCs spawn in
+      // _tickRefill, which runs AFTER _updateNpcSensors (the grading), so clearing
+      // at the top of the loop leaves the sensor tick with an empty NPC list.
+      tm.allNpcs.clear();
+      player.update(1 / 60);
+      tm.update(1 / 60);
+      if (identical(player.spline, inner)) committed = true;
+      if (tile.scenario.result.status == ScenarioStatus.passed) break;
+    }
+    expect(committed, isTrue,
+        reason: 'the universal slide commits the merge onto the inner lane through '
+            'the real manager (playerLaneMates → offset-cap-commit)');
+    expect(tile.scenario.result.status, ScenarioStatus.passed,
+        reason: 'the merge grading clears once the player has merged in and passed '
+            'the pinch — the connector is graded on the universal path');
   });
 }

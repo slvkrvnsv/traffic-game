@@ -144,6 +144,55 @@ void main() {
                 '(frame $i, merge y=${localY(merge).toStringAsFixed(0)})');
       }
     });
+
+    test('a merging car slightly AHEAD of a through car does NOT gridlock — it '
+        'clears the merge (the "stuck on the merge spot, blinker on, forever" bug)',
+        () {
+      // The mutual-stall repro: the merging (outer) car is ~33u ahead of a through
+      // (inner) car — INSIDE the old kCarLength skip band, so the merging car used
+      // to yield to a car it was already ahead of while that car braked for it.
+      // Both froze in the taper forever (the merging car keeping its left blinker
+      // on). With _mergeLeadMargin aligned to the lead cone, the merging car claims
+      // the spot it leads and drives on.
+      final merge = npcAt(mergeLane, 2, 600, speed: kmhToUnits(40));
+      final through = npcAt(throughLane, 1, 636, speed: kmhToUnits(40)); // ~33u back
+      tile.npcs.addAll([merge, through]);
+
+      const dt = 1 / 60;
+      for (int i = 0; i < 240; i++) {
+        tile.updateNpcSensors(dt, player, tile.npcs, const []);
+        merge.update(dt);
+        through.update(dt);
+      }
+      expect(localY(merge), lessThan(250),
+          reason: 'the merging car cleared the convergence instead of dead-locking '
+              'with the through car behind it (the repro froze it at y≈560)');
+    });
+
+    test('a merging car AHEAD of a through car never overlaps it either — the '
+        'tighter yield margin is safe (arbiter of the old "reintroduces overlap" '
+        'worry)', () {
+      // The memory warned a smaller margin would reintroduce pass-through overlap.
+      // It does not: once the merging car is past the lead-cone threshold ahead,
+      // the THROUGH car sees it and brakes/drops back, so they never phase through.
+      final merge = npcAt(mergeLane, 2, 600, speed: kmhToUnits(40));
+      final through = npcAt(throughLane, 1, 636, speed: kmhToUnits(40));
+      tile.npcs.addAll([merge, through]);
+
+      const dt = 1 / 60;
+      for (int i = 0; i < 180; i++) {
+        tile.updateNpcSensors(dt, player, tile.npcs, const []);
+        merge.update(dt);
+        through.update(dt);
+        final overlap = obbOverlap(
+          merge.position, kCarWidth, kCarLength, merge.angle,
+          through.position, kCarWidth, kCarLength, through.angle,
+        );
+        expect(overlap, isFalse,
+            reason: 'merge-ahead cars must not phase through as the lanes converge '
+                '(frame $i, merge y=${localY(merge).toStringAsFixed(0)})');
+      }
+    });
   });
 
   group('Oncoming mirror', () {

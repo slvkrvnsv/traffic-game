@@ -22,9 +22,12 @@ import '../scenarios/merge_scenario.dart';
 ///   * **merge (2→1):** the player's outer/right lane ends and merges left into
 ///     the inner lane (the MUTCD "Right Lane Ends" situation). Two player paths
 ///     — the through lane (640) and the merging lane (720→640) — so the seam
-///     hand-off keeps the player in whichever lane they entered. Lane-change is
-///     OFF (it's a commanded transition, not free steering), and the merge is
-///     announced as "Merge left".
+///     hand-off keeps the player in whichever lane they entered. The player merges
+///     with the UNIVERSAL lane change (drag left onto the inner lane — the same
+///     offset-cap-commit SLIDE every multi-lane tile uses); steering is only gated
+///     off near the pinch where the lanes coincide (see [allowsLaneChangeAt]). A
+///     player who never drags is delivered in by the merging lane's own geometry.
+///     The merge is announced as "Merge left".
 ///   * **extend (1→2):** a lane is added on the right (1→2) — the north-south
 ///     mirror of a merge. The player simply continues in the inner lane; the
 ///     new lane opens to their right and is joined on the following 2-lane
@@ -217,21 +220,6 @@ class LaneTransitionTile extends TileBase {
     return _openness(localPos.y) * kLaneWidth >= kSteerEnableSeparation;
   }
 
-  @override
-  Spline? splineSteerTargetAt(Vector2 localPos, int direction) {
-    // The fork is wherever the two player lanes are still near-coincident — the
-    // START of a widen (outer lane about to diverge out) AND the END of a merge
-    // (outer lane just converged in). Same condition for both: the outer lane's
-    // separation from the inner one is below a real lane-width. Past that
-    // they're clearly two lanes → ordinary offset lane change ("loosens").
-    if (_openness(localPos.y) * kLaneWidth >= kMinLaneCommitSeparation) {
-      return null;
-    }
-    // playerPaths = [through (inner/left), outer lane (right)] — a drag picks
-    // the spline on that side; the spline geometry merges in / diverges out.
-    return direction > 0 ? playerPaths[1] : playerPaths[0];
-  }
-
   // The "Merge left" task is announced dynamically by [updateNpcSensors] — only
   // while the player is actually in the ending (right) lane — so there's no
   // static label that would show even when they're already in the through lane.
@@ -260,9 +248,17 @@ class LaneTransitionTile extends TileBase {
   // through lane they have priority and nothing is tested ("just go").
   // ---------------------------------------------------------------------------
 
-  /// A converging car may slot ahead of a surviving-lane car only once it's at
-  /// least this far ahead (tile-local Y); otherwise it gives way and tucks in.
-  static const double _mergeLeadMargin = kCarLength;
+  /// The merge-yield gives way to a surviving-lane car unless that car is already
+  /// THIS far BEHIND us (tile-local Y) — then we've won the zipper and drive on.
+  /// MUST stay equal to [TileBase._gapAhead]'s lead-detection cone threshold
+  /// (`kCarLength * 0.5`): the merging car stops yielding to a surviving car at
+  /// exactly the point that car starts seeing the merging car as a lead and brakes
+  /// for it. Aligned, responsibility hands off cleanly — no gap where the merging
+  /// car yields to a car BEHIND it while that car simultaneously brakes for it (a
+  /// mutual stall that froze the merging car in the taper, blinker on, FOREVER —
+  /// the reported "stuck on the merge spot" bug), and no band where both yield. The
+  /// old full `kCarLength` left exactly that 26u deadlock band.
+  static const double _mergeLeadMargin = kCarLength * 0.5;
 
   bool _taskShown = false;
   bool _playerEverMerged = false;
@@ -342,7 +338,9 @@ class LaneTransitionTile extends TileBase {
       double gap = double.infinity;
       for (final vY in survY) {
         final ahead = northbound ? (myY - vY) : (vY - myY); // >0 ⇒ they're ahead
-        if (ahead < -_mergeLeadMargin) continue; // we're clearly in front → go
+        // The surviving car is already behind us (and far enough back that IT now
+        // brakes for us, see [_mergeLeadMargin]) → we've won the spot, drive on.
+        if (ahead < -_mergeLeadMargin) continue;
         final g = (ahead - kCarLength).clamp(0.0, double.infinity);
         if (g < gap) gap = g;
       }
