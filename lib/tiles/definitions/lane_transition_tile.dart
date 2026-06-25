@@ -353,9 +353,10 @@ class LaneTransitionTile extends TileBase {
   }
 
   /// Passive, lane-scoped player grading (merge tile only). "Actively merging" =
-  /// in the ending lane AND not yet past the pinch — the "Merge left" task, the
-  /// cut-off fault and the auto-signal all key off it, so a player who has
-  /// already merged in can't be flagged for an "unsafe merge" later.
+  /// in the ending lane AND not yet past the pinch — the "Merge left" task and
+  /// the cut-off fault both key off it, so a player who has already merged in
+  /// can't be flagged for an "unsafe merge" later. (The blinker is manual now —
+  /// the tile no longer forces it.)
   void _updatePlayerMergeGrading(PlayerCar playerCar) {
     final playerMerging = identical(playerCar.spline, playerPaths[1]);
     final playerY = worldToLocal(playerCar.position).y;
@@ -370,7 +371,6 @@ class LaneTransitionTile extends TileBase {
       GameBus.instance.emit(ManeuverAnnouncedEvent(
           maneuver: null, label: activelyMerging ? 'Merge left' : null));
     }
-    playerCar.forceLeftIndicator = activelyMerging;
 
     if (!_mergeCleared && _playerEverMerged && playerY <= _taperEndY) {
       _mergeCleared = true;

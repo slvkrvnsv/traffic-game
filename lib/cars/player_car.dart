@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'package:flame/components.dart';
 import 'package:flutter/services.dart';
 import '../core/constants.dart';
+import '../core/game_bus.dart';
 import '../core/spline.dart';
 import '../core/utils.dart';
 import '../input/input_state.dart';
@@ -12,9 +13,11 @@ import 'car_variants.dart';
 /// The player-controlled car.
 ///
 /// The trajectory is determined by the active spline (assigned by TileManager).
-/// The player only controls speed via Gas (accelerate) and Brake (decelerate).
-/// Indicators are automatic: the route is commanded by the game (exam-style),
-/// so the car signals like a well-behaved examinee whenever a turn is near.
+/// The player controls speed via Gas (accelerate) and Brake (decelerate), and
+/// arms the turn signal manually via the HUD blinker buttons. The route is
+/// commanded by the game (exam-style), but indicating the commanded turn is on
+/// the player — only the self-cancel (clearing the blinker once the turn has
+/// been driven through) is automatic, like a real car's stalk.
 class PlayerCar extends CarBase {
   PlayerCar()
       : super(
@@ -43,18 +46,6 @@ class PlayerCar extends CarBase {
   Vector2 _laneTileOffset = Vector2.zero();
   double _laneTileAngle = 0.0;
   bool _laneChangeAllowed = true;
-
-  /// Set by the merge tile while the player is in the ending lane with the
-  /// "Merge left" task active: forces the left indicator on (the curvature-based
-  /// auto-indicator wouldn't fire until the lane visibly bends). Cleared by the
-  /// tile once merged / out of the lane.
-  bool forceLeftIndicator = false;
-
-  /// Mirror of [forceLeftIndicator] for a forced RIGHT indicator — set by a
-  /// multi-lane intersection while the player must move to (or hold) the right
-  /// lane for the commanded maneuver, before the lane visibly bends. Cleared by
-  /// the tile once the lane change is no longer the active task.
-  bool forceRightIndicator = false;
 
   /// Record the parallel travel lanes available on the player's current tile,
   /// plus that tile's world placement, so a swipe can switch between them.
@@ -85,7 +76,8 @@ class PlayerCar extends CarBase {
     _readInput();
     _updateLaneChange(dt);
     super.update(dt); // updates speed via CarBase._updateMotion
-    _updateAutoIndicators();
+    _updateSignalAutoCancel(); // may clear the blinker as a turn completes
+    _readManualSignals();
     SpeedState.instance.updateFromUnits(speed);
   }
 
@@ -264,6 +256,7 @@ class PlayerCar extends CarBase {
       lateralOffset -= sep; // rebase onto new lane; heading continuous
       _steerConsumed = true; // one drag = one lane; finger dropped until release
       HapticFeedback.selectionClick();
+      _gradeLaneChangeCommit(1); // right blinker on → drop it; off → fault
     }
     while (true) {
       final sep = _adjacentSeparation(-1);
@@ -276,6 +269,7 @@ class PlayerCar extends CarBase {
       lateralOffset += sep;
       _steerConsumed = true; // one drag = one lane; finger dropped until release
       HapticFeedback.selectionClick();
+      _gradeLaneChangeCommit(-1); // left blinker on → drop it; off → fault
     }
 
     // 6. Body points along its true heading. The front wheels follow the YAW
@@ -432,6 +426,7 @@ class PlayerCar extends CarBase {
     // Click only when the fork is a TURN (or a merge, handled in _commitToAdjacent):
     // sliding straight through a junction shouldn't buzz.
     if (haptic) HapticFeedback.selectionClick();
+    _gradeTurnSignal(branch); // global fault if a real turn was taken unsignalled
   }
 
   /// Switch the spline to the adjacent lane on [direction] (+1 right / -1 left)
@@ -466,34 +461,88 @@ class PlayerCar extends CarBase {
     return true;
   }
 
-  /// Signal when the path bends within [kIndicatorSignalDistance] ahead;
-  /// stays on through the curve and switches off once the path straightens.
-  void _updateAutoIndicators() {
+  /// Mirror the player's manual blinker (the HUD's `<` / `>` buttons) onto the
+  /// car's indicators. There is no automatic or curvature-based signalling to
+  /// turn it ON: the player is responsible for that, just like a real driving
+  /// exam. ([_updateSignalAutoCancel] runs first and may have cleared it.)
+  void _readManualSignals() {
+    final sig = InputState.instance.turnSignal;
+    setLeftIndicator(sig < 0);
+    setRightIndicator(sig > 0);
+  }
+
+  /// True once a bend in the armed blinker's direction is being driven through,
+  /// until the road straightens again (then the blinker self-cancels).
+  bool _turnUnderway = false;
+
+  /// Self-cancel the blinker once a turn in its signalled direction has been
+  /// driven THROUGH and the road has straightened again — the digital version
+  /// of a steering wheel snapping the indicator stalk back off. Only the OFF is
+  /// automatic; arming the blinker stays manual. Reads the heading change a
+  /// short distance ahead on the current spline, so it keys off the geometry the
+  /// car is actually driving (a parallel lane-change has no bend → never fires).
+  void _updateSignalAutoCancel() {
+    final sig = InputState.instance.turnSignal;
     final s = spline;
-    if (s == null || hasReachedEnd) {
-      setLeftIndicator(false);
-      setRightIndicator(false);
-      return;
-    }
-    // A commanded merge signals left from the moment the task appears (while in
-    // the ending lane), before the lane has visibly bent. A multi-lane
-    // intersection forces the indicator toward the lane the player must take.
-    if (forceLeftIndicator) {
-      setLeftIndicator(true);
-      setRightIndicator(false);
-      return;
-    }
-    if (forceRightIndicator) {
-      setLeftIndicator(false);
-      setRightIndicator(true);
+    if (sig == 0 || s == null) {
+      _turnUnderway = false;
       return;
     }
     final tAhead =
-        ((distanceTravelled + kIndicatorSignalDistance) / s.totalLength)
-            .clamp(0.0, 1.0);
-    final delta = normaliseAngle(s.angleAt(tAhead) - s.angleAt(currentT));
-    setLeftIndicator(delta < -0.3);
-    setRightIndicator(delta > 0.3);
+        (currentT + kSignalCancelLookahead / s.totalLength).clamp(0.0, 1.0);
+    final curve = normaliseAngle(s.angleAt(tAhead) - s.angleAt(currentT));
+    final intoTurn = sig < 0
+        ? curve < -kSignalCancelEnterCurve
+        : curve > kSignalCancelEnterCurve;
+    if (intoTurn) {
+      _turnUnderway = true;
+    } else if (_turnUnderway && curve.abs() < kSignalCancelExitCurve) {
+      cancelSignalForCompletedManeuver(sig); // turn in [sig]'s direction is done
+      _turnUnderway = false;
+    }
+  }
+
+  /// Self-cancel the blinker now that the maneuver it was armed for is finished —
+  /// a turn driven through (the curvature detector above) or a lane-change/merge
+  /// that just COMMITTED (the haptic-click moment in [_updateLaneChange]). [dir]
+  /// is that maneuver's direction (-1 left / +1 right); only a blinker armed the
+  /// SAME way is cleared, so a wrong-way signal is left for the player. This is
+  /// the one place the blinker turns itself off.
+  void cancelSignalForCompletedManeuver(int dir) {
+    if (InputState.instance.turnSignal == dir) InputState.instance.clearSignal();
+  }
+
+  /// At a committed lane change toward [dir] (-1 left / +1 right): if the
+  /// matching blinker was armed, self-cancel it (the move is done); if it WASN'T,
+  /// that's a "changed lanes without signalling" fault. Global — fires for every
+  /// lane change / corridor merge on any tile (a universal commit, not per-tile).
+  void _gradeLaneChangeCommit(int dir) {
+    if (InputState.instance.turnSignal == dir) {
+      InputState.instance.clearSignal(); // signalled → self-cancel (stalk snap-back)
+    } else {
+      GameBus.instance.emit(LaneChangeWithoutSignalEvent(speed: speed));
+    }
+  }
+
+  /// Net turn direction of [branch] from its overall heading change: -1 left,
+  /// +1 right, 0 if effectively straight (a through fork, not a turn).
+  int _branchTurnSign(Spline branch) {
+    final net = normaliseAngle(branch.angleAt(1.0) - branch.angleAt(0.0));
+    if (net < -kTurnGradeMinAngle) return -1;
+    if (net > kTurnGradeMinAngle) return 1;
+    return 0;
+  }
+
+  /// At a committed TURN onto [branch]: if it actually turns and the matching
+  /// blinker isn't armed, that's a "turned without signalling" fault. Global —
+  /// fires for every commanded turn on any tile. (The blinker's own self-cancel
+  /// happens later, via the curvature detector, once the turn is driven through,
+  /// so here the blinker still reflects what the player set on the approach.)
+  void _gradeTurnSignal(Spline branch) {
+    final dir = _branchTurnSign(branch);
+    if (dir != 0 && InputState.instance.turnSignal != dir) {
+      GameBus.instance.emit(TurnWithoutSignalEvent(speed: speed));
+    }
   }
 
   void _readInput() {

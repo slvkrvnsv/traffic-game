@@ -6,6 +6,7 @@ import 'core/constants.dart';
 import 'core/game_bus.dart';
 import 'debug/debug_state.dart';
 import 'core/maneuver.dart';
+import 'input/input_state.dart';
 import 'tiles/tile_registry.dart';
 import 'world/camera_controller.dart';
 import 'world/game_world.dart';
@@ -46,6 +47,9 @@ class TrafficGame extends FlameGame {
   @override
   Future<void> onLoad() async {
     // Tiles are registered once at app startup in main.dart.
+    // Clear the touch controls so a held pedal or armed blinker never carries
+    // over from the previous game (restart rebuilds the whole TrafficGame).
+    InputState.instance.reset();
     DebugState.showDebug = testMode != null || testSequence != null;
 
     // Build world + camera

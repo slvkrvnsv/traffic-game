@@ -238,13 +238,7 @@ void main() {
     });
   });
 
-  group('Player merge signaling (auto left indicator)', () {
-    late LaneTransitionTile tile;
-    setUp(() {
-      tile = LaneTransitionTile(merging: true)
-        ..place(worldPosition: Vector2.zero(), orientation: 0.0);
-    });
-
+  group('Player merge scenario', () {
     PlayerCar playerOn(Spline path, double y) {
       final p = PlayerCar();
       p.assignSpline(path,
@@ -253,18 +247,6 @@ void main() {
       p.position = p.splinePosition;
       return p;
     }
-
-    test('in the ending lane the left indicator is forced on', () {
-      final p = playerOn(tile.playerPaths[1], 600); // merge (ending) lane
-      tile.updateNpcSensors(1 / 60, p, tile.npcs, const []);
-      expect(p.forceLeftIndicator, isTrue);
-    });
-
-    test('in the through lane there is no forced signal ("just go")', () {
-      final p = playerOn(tile.playerPaths[0], 600); // through lane
-      tile.updateNpcSensors(1 / 60, p, tile.npcs, const []);
-      expect(p.forceLeftIndicator, isFalse);
-    });
 
     test('the unsafe-merge fault is armed while merging and DISARMS past the '
         'pinch (no late fault that reads as a later tile)', () {

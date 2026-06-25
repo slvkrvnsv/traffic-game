@@ -53,6 +53,13 @@ class ExamErrorRecorder extends Component {
     _subs.add(GameBus.instance.on<DriverReactionEvent>().listen(
         (e) => _record(ExamErrorType.cutOff, detail: e.reaction.name)));
 
+    // Manoeuvred without signalling — detected globally at the commit (PlayerCar),
+    // not by any tile scenario. Recorded straight through, like the cut-off above.
+    _subs.add(GameBus.instance.on<LaneChangeWithoutSignalEvent>().listen((e) =>
+        _record(ExamErrorType.laneChangeWithoutSignal, speed: e.speed)));
+    _subs.add(GameBus.instance.on<TurnWithoutSignalEvent>().listen((e) =>
+        _record(ExamErrorType.turnWithoutSignal, speed: e.speed)));
+
     _subs.add(GameBus.instance.on<CollisionEvent>().listen(
         (e) => _record(ExamErrorType.collision, detail: e.otherType)));
   }

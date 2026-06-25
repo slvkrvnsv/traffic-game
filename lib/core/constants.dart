@@ -342,6 +342,22 @@ const double kReactCutInWindowSeconds = 1.2;
 // ---------------------------------------------------------------------------
 const double kIndicatorBlinkPeriod = 0.5; // seconds per on/off cycle
 const double kIndicatorSignalDistance = 500.0; // units before turn → start blinking
+
+// Manual-blinker self-cancel — the digital "steering wheel snaps the stalk off".
+// The player arms the blinker by hand; once the car has driven THROUGH a bend in
+// the signalled direction and the road straightens again, it clears itself. The
+// trigger reads the heading change [kSignalCancelLookahead] units ahead on the
+// current spline: a real intersection turn peaks at ~1.27 rad there, so the enter
+// gate sits at ~55% of that (gentle road curves stay well under it) and the exit
+// gate sits low (a straight reads ~0).
+const double kSignalCancelLookahead = 100.0;
+const double kSignalCancelEnterCurve = 0.70; // rad: "I'm in a turn this way"
+const double kSignalCancelExitCurve = 0.15; // rad: "the road is straight again"
+
+/// A committed fork branch counts as a TURN (graded for "turned without
+/// signalling") when its overall heading change exceeds this — a real turn
+/// is ~90° (~1.57 rad); a straight-through fork is ~0.
+const double kTurnGradeMinAngle = 0.5; // rad
 /// Headlight courtesy-flash on/off cycle (quicker than a turn signal) — an NPC
 /// flashing a hesitating player at an all-way stop to wave them on.
 const double kHeadlightFlashPeriod = 0.18;

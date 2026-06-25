@@ -43,6 +43,22 @@ class RedLightViolationEvent extends GameEvent {}
 /// going straight from a left-turn-only lane). Non-fatal — a logged exam fault.
 class WrongLaneEvent extends GameEvent {}
 
+/// Player changed lanes (or merged) without the turn signal armed that way.
+/// Global — detected at the lane-change commit on any tile, not scenario-gated.
+/// Non-fatal: a logged exam fault.
+class LaneChangeWithoutSignalEvent extends GameEvent {
+  LaneChangeWithoutSignalEvent({required this.speed});
+  final double speed;
+}
+
+/// Player took a commanded turn without the turn signal armed that way. Global —
+/// detected at the turn commit on any tile, not scenario-gated. Non-fatal: a
+/// logged exam fault.
+class TurnWithoutSignalEvent extends GameEvent {
+  TurnWithoutSignalEvent({required this.speed});
+  final double speed;
+}
+
 /// Player sat still on a clear road with no reason to wait — blocking traffic.
 class RoadBlockingEvent extends GameEvent {
   RoadBlockingEvent({required this.duration});

@@ -618,7 +618,6 @@ class IntersectionLightTile extends TileBase {
     }
     _checkPedestrianGiveWay(playerCar, pedestrians);
     _checkBlockedIntersection(dt, playerCar, allNpcs);
-    _driveForcedIndicator(playerCar);
   }
 
   void _applySignalToNpcs(Map<Object, double?> pedStopById, List<NpcCar> allNpcs,
@@ -724,19 +723,6 @@ class IntersectionLightTile extends TileBase {
         (pZone == _Zone.inBox && _otherCarInBox) ||
         ((pZone == _Zone.approaching || pZone == _Zone.inBox) && oncomingPresent) ||
         _pedBlockingPlayer;
-  }
-
-  // ---------------------------------------------------------------------------
-  // Forced turn-signal toward the lane the player must take (signal on entry).
-  // ---------------------------------------------------------------------------
-  void _driveForcedIndicator(PlayerCar playerCar) {
-    final local = worldToLocal(playerCar.position);
-    final onApproach = _zoneOf(_Heading.north, local) == _Zone.approaching;
-    // On the approach, signal toward the required lane (= the turn direction for
-    // left/right; a lane-change-right for straight). In/after the box the
-    // spline-curvature auto-indicator takes over (and clears for straight).
-    playerCar.forceLeftIndicator = onApproach && _maneuver == Maneuver.left;
-    playerCar.forceRightIndicator = onApproach && _maneuver != Maneuver.left;
   }
 
   // ---------------------------------------------------------------------------

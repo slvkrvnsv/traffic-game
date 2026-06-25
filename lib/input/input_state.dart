@@ -16,11 +16,20 @@ class InputState extends ChangeNotifier {
   double _laneSteerPx = 0.0;
   bool _laneSteerActive = false;
 
+  /// Manual turn signal: -1 = left, 0 = off, +1 = right (the two sides are
+  /// mutually exclusive). The player arms it from the HUD blinker buttons and
+  /// PlayerCar mirrors it onto its indicators each frame. There is no automatic
+  /// or curvature-based signalling for the player any more — this field is the
+  /// single source of truth for the player's blinker.
+  int _turnSignal = 0;
+
   double get gasLevel => _gasLevel;
   double get brakeLevel => _brakeLevel;
 
   double get laneSteerPx => _laneSteerPx;
   bool get laneSteerActive => _laneSteerActive;
+
+  int get turnSignal => _turnSignal;
 
   /// Update the live lane-steer displacement from a horizontal drag.
   void setLaneSteer(double px) {
@@ -32,6 +41,24 @@ class InputState extends ChangeNotifier {
   void endLaneSteer() {
     _laneSteerActive = false;
     _laneSteerPx = 0.0;
+  }
+
+  /// Flick the blinker for [dir] (-1 = left, +1 = right): arms that side, or
+  /// turns it off again if it was already armed. Arming one side cancels the
+  /// other, so the two are always mutually exclusive.
+  void toggleSignal(int dir) {
+    final next = (_turnSignal == dir) ? 0 : dir;
+    if (_turnSignal == next) return;
+    _turnSignal = next;
+    notifyListeners();
+  }
+
+  /// Force the blinker off — used by the car's self-cancel once a turn in the
+  /// signalled direction has been completed (the real-life stalk snap-back).
+  void clearSignal() {
+    if (_turnSignal == 0) return;
+    _turnSignal = 0;
+    notifyListeners();
   }
 
   void setGasLevel(double level) {
@@ -53,6 +80,7 @@ class InputState extends ChangeNotifier {
     _brakeLevel = 0.0;
     _laneSteerPx = 0.0;
     _laneSteerActive = false;
+    _turnSignal = 0;
     notifyListeners();
   }
 }

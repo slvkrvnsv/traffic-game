@@ -104,7 +104,9 @@ class _HudControlsState extends State<HudControls> {
           ),
         ),
 
-        // Pedals — bottom-right corner: brake (left) + gas (right).
+        // Controls — bottom-right corner. Left column: the two blinkers (< >)
+        // sit above the brake; the gas runs tall on the right, as deep as the
+        // whole column.
         Positioned(
           right: 24,
           bottom: 36,
@@ -112,13 +114,55 @@ class _HudControlsState extends State<HudControls> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              _PedalButton(
-                icon: Icons.drag_handle_rounded,
-                color: const Color(0xFFEF4444),
-                pressed: _brakeDown,
-                onChanged: _setBrake,
-                width: 140.0,
-                height: 88.0,
+              // Fixed-width column so the blinker row and brake stay 140 wide
+              // (a stretch Column would balloon to the loose incoming width).
+              SizedBox(
+                width: 140,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    // Manual turn signals: tap to arm a side, tap it again (or
+                    // the other side) to switch or clear. Reading straight from
+                    // InputState keeps the lit state in sync through a restart's
+                    // reset().
+                    ListenableBuilder(
+                      listenable: InputState.instance,
+                      builder: (context, _) {
+                        final signal = InputState.instance.turnSignal;
+                        return Row(
+                          children: [
+                            Expanded(
+                              child: _BlinkerButton(
+                                icon: Icons.chevron_left_rounded,
+                                active: signal < 0,
+                                onTap: () =>
+                                    InputState.instance.toggleSignal(-1),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: _BlinkerButton(
+                                icon: Icons.chevron_right_rounded,
+                                active: signal > 0,
+                                onTap: () =>
+                                    InputState.instance.toggleSignal(1),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _PedalButton(
+                      icon: Icons.drag_handle_rounded,
+                      color: const Color(0xFFEF4444),
+                      pressed: _brakeDown,
+                      onChanged: _setBrake,
+                      width: 140.0,
+                      height: 88.0,
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(width: 18),
               _PedalButton(
@@ -127,7 +171,7 @@ class _HudControlsState extends State<HudControls> {
                 pressed: _gasDown,
                 onChanged: _setGas,
                 width: 88.0,
-                height: 140.0,
+                height: 152.0,
               ),
             ],
           ),
@@ -188,6 +232,58 @@ class _PedalButton extends StatelessWidget {
           ],
         ),
         child: Icon(icon, color: Colors.white, size: 40),
+      ),
+    );
+  }
+}
+
+/// A tap-to-toggle turn-signal button. Amber and glowing while armed, dim when
+/// off — the same amber as the indicator stars painted on the car. Opaque, so a
+/// tap toggles the blinker rather than falling through to the steering layer.
+class _BlinkerButton extends StatelessWidget {
+  const _BlinkerButton({
+    required this.icon,
+    required this.active,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final bool active;
+  final VoidCallback onTap;
+
+  static const Color _amber = Color(0xFFFFC400);
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: (_) => onTap(),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 80),
+        height: 52,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          color: active ? _amber : _amber.withValues(alpha: 0.18),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: active ? 0.9 : 0.4),
+            width: 3,
+          ),
+          boxShadow: active
+              ? [
+                  BoxShadow(
+                    color: _amber.withValues(alpha: 0.7),
+                    blurRadius: 18,
+                    spreadRadius: 2,
+                  ),
+                ]
+              : const [],
+        ),
+        child: Icon(
+          icon,
+          color: active ? Colors.black : Colors.white.withValues(alpha: 0.8),
+          size: 34,
+        ),
       ),
     );
   }

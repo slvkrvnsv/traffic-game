@@ -10,6 +10,14 @@ enum ExamErrorType {
   blockedIntersection,
   wrongLane,
 
+  /// Changed lanes (or merged) without the turn signal armed that way. Detected
+  /// globally at the lane-change commit — not tied to any one tile.
+  laneChangeWithoutSignal,
+
+  /// Took a commanded turn without the turn signal armed that way. Detected
+  /// globally at the turn commit — not tied to any one tile.
+  turnWithoutSignal,
+
   /// A scenario task failed but isn't one of the specific rules above — e.g. an
   /// unsafe merge. The human-readable reason rides in [ExamError.detail].
   scenarioFault,
@@ -37,6 +45,8 @@ extension ExamErrorTypeLabel on ExamErrorType {
         ExamErrorType.roadBlocking => 'Blocked the road',
         ExamErrorType.blockedIntersection => 'Blocked the intersection',
         ExamErrorType.wrongLane => 'Wrong lane for the turn',
+        ExamErrorType.laneChangeWithoutSignal => 'Changed lanes without signalling',
+        ExamErrorType.turnWithoutSignal => 'Turned without signalling',
         ExamErrorType.scenarioFault => 'Failed the maneuver',
         ExamErrorType.cutOff => 'Cut off a driver',
         ExamErrorType.collision => 'Collision',
@@ -49,6 +59,8 @@ extension ExamErrorTypeLabel on ExamErrorType {
         ExamErrorType.roadBlocking ||
         ExamErrorType.blockedIntersection ||
         ExamErrorType.wrongLane ||
+        ExamErrorType.laneChangeWithoutSignal ||
+        ExamErrorType.turnWithoutSignal ||
         ExamErrorType.scenarioFault =>
           ExamErrorCategory.fault,
         ExamErrorType.cutOff => ExamErrorCategory.unsafe,
