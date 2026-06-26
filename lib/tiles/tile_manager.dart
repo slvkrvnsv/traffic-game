@@ -663,7 +663,16 @@ class TileManager extends Component {
     final playerFwd = Vector2(cos(playerCar.angle), sin(playerCar.angle));
 
     for (final (npc, tile) in reached) {
-      final next = _findContinuation(npc);
+      // Check occupancy BEFORE looking for a continuation. A blocked car holds at
+      // the seam (see the hold-and-queue branch below) instead of stacking on a
+      // car queued there (the cross-seam overlap bug) or rear-ending the player
+      // stopped just ahead. Crucially, [_findContinuation] draws from the shared
+      // map-generation [_rng] (it picks a random movement), so calling it every
+      // frame for a car held at an occupied seam would couple congestion to the
+      // seeded tile/locale/maneuver stream (non-determinism) and rescan all lanes
+      // needlessly — skip it when blocked.
+      final blocked = _seamEntryBlocked(npc);
+      final next = blocked ? null : _findContinuation(npc);
       if (next != null) {
         // Carry momentum (speed is untouched) and the overflow distance so the
         // car re-enters the new lane exactly where it left off.
@@ -692,6 +701,23 @@ class TileManager extends Component {
         continue;
       }
 
+      // Blocked from carrying onto a LIVE continuation — its entry slot is taken.
+      // Hold-and-queue: the car waits at the seam as the tail of a queue spanning
+      // the boundary and carries the instant the slot clears (next frame, once the
+      // occupant rolls forward). It never despawns on-screen — the visible pop the
+      // gate would otherwise cause. It is already position-clamped at the seam, so
+      // pinning it stopped is invisible (no jump) and keeps it from lunging into
+      // the occupant on carry. No wait-timeout: a queue can outlast it, and the
+      // normal distance cull reclaims the car off-screen if the player drives away
+      // (a follower behind a stopped player instead carries the moment the player
+      // pulls off — it follows them through, exactly the seamless case).
+      if (blocked) {
+        npc.speed = 0.0;
+        npc.targetSpeed = 0.0;
+        npc.seamWaitTime = 0.0;
+        continue;
+      }
+
       // No continuation. Only same-direction through-traffic still ahead of the
       // player is worth holding for — the tile ahead just hasn't streamed in
       // yet (and it's off-screen anyway). Everything else (oncoming/cross
@@ -715,6 +741,36 @@ class TileManager extends Component {
         tile.npcs.remove(npc);
       }
     }
+  }
+
+  /// Whether the seam slot [npc] is about to be carried into is already occupied
+  /// by another car (an NPC or the player) — too close ahead in the same lane to
+  /// slot in without overlapping. The carried car starts at the seam, so its own
+  /// world position is the entry; its heading is its travel direction.
+  bool _seamEntryBlocked(NpcCar npc) {
+    final heading = Vector2(cos(npc.angle), sin(npc.angle));
+    for (final c in _spawner.allNpcs) {
+      if (identical(c, npc)) continue;
+      if (seamSlotBlocked(npc.position, heading, c.position)) return true;
+    }
+    return seamSlotBlocked(npc.position, heading, playerCar.position);
+  }
+
+  /// Pure occupancy test: does [other] occupy the seam entry slot at [entryPos]
+  /// for a car heading [heading]? True when [other] sits anywhere from just
+  /// behind the entry (on top of it) up to one car-length-plus-standing-gap
+  /// ahead, in the same lane — i.e. there is no room to drop a car in without
+  /// stacking. A car further ahead leaves room (the carried car queues behind it
+  /// via normal lead-car following); a car well behind or in another lane is
+  /// irrelevant.
+  @visibleForTesting
+  static bool seamSlotBlocked(Vector2 entryPos, Vector2 heading, Vector2 other) {
+    final delta = other - entryPos;
+    final fwd = delta.dot(heading);
+    if (fwd < -kCarLength * 0.5) return false; // clearly behind the seam
+    if (fwd > kCarLength + kNpcStandingGap) return false; // room to queue ahead
+    final lateral = (delta - heading * fwd).length;
+    return lateral <= kCarWidth * 1.5; // same lane → no room → blocked
   }
 
   /// Find a lane on any live tile that continues [npc]'s travel past the seam

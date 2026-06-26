@@ -18,6 +18,12 @@ class _ReactState {
   /// genuine cut-off is a fresh intrusion (small value); a car the player has
   /// been ahead of all along is just catching up (large value → not a cut-off).
   double timeInPath = 0.0;
+
+  /// The spline this NPC was on last frame. A change means it was re-assigned —
+  /// a cross-seam carry (or first sight after spawn) — which teleports its
+  /// geometry discontinuously; we re-baseline that frame rather than mistake the
+  /// player suddenly ahead on the new spline for a fresh cut-in.
+  Object? lastSpline;
 }
 
 /// Detects when the player forces an NPC into a hard brake (e.g. cutting in on
@@ -55,6 +61,19 @@ class DriverReactionDetector extends Component {
     for (final npc in tileManager.allNpcs) {
       final state = _states[npc] ??= _ReactState();
       if (state.cooldown > 0) state.cooldown -= dt;
+
+      // A spline re-assignment (a cross-seam carry, or first sight after spawn)
+      // moves the NPC's geometry discontinuously this frame: the player can jump
+      // from "not in this lane" to "right ahead" with no motion the player made.
+      // Re-baseline (not fresh, already-braking) so the teleport frame — and the
+      // first frame after it — can't fire a phantom "player cut me off" against a
+      // car that simply streamed in behind a player who did nothing.
+      if (!identical(npc.spline, state.lastSpline)) {
+        state.lastSpline = npc.spline;
+        state.timeInPath = kReactCutInWindowSeconds + 1.0; // not a fresh intrusion
+        state.hardBraking = true; // no rising edge on the next frame either
+        continue;
+      }
 
       // Track how long the player has been *settled* ahead in this lane, to
       // tell a fresh cut-in/merge apart from a car catching up to a player
