@@ -587,16 +587,27 @@ class IntersectionTile extends TileBase {
     return false;
   }
 
-  /// Greedy first-come-first-served release for an all-way stop. Given the
-  /// waiters in ascending arrival-ticket order, the ids already committed to
-  /// the box ([going] — cars in the box plus earlier grants), and a [conflicts]
+  /// First-come-first-served release for an all-way stop. Given the waiters in
+  /// ascending arrival-ticket order, the ids already committed to the box
+  /// ([going] — cars in the box plus earlier grants), and a [conflicts]
   /// predicate, returns the full set permitted to proceed.
   ///
-  /// A waiter is released unless a *conflicting* car is already going. Walking
-  /// in ticket order means the earliest of any mutually-conflicting group wins
-  /// and the rest hold, so the result is a total order that cannot dead-lock:
-  /// for any set of conflicting stopped cars at least one (the lowest ticket)
-  /// proceeds, and the next proceeds once it clears. Pure and side-effect free
+  /// A waiter is released unless a *conflicting* car has the right of way over
+  /// it — that is, a conflicting car already going OR a conflicting car that
+  /// arrived EARLIER and is itself still waiting. Walking in ticket order, the
+  /// earliest of any mutually-conflicting group wins and the rest hold.
+  ///
+  /// The "earlier waiter" clause is the all-way-stop ARRIVAL-ORDER rule: a car
+  /// may not take its turn while a car that stopped before it (and whose path it
+  /// crosses) is still waiting — even if that senior car is itself held up by a
+  /// third car. Without it, a late arrival whose path happens to be clear of
+  /// whatever is *currently* crossing the box leapfrogs the senior it conflicts
+  /// with (the bug: you get waved through ahead of a car that called it first).
+  ///
+  /// Still a total order that cannot dead-lock: the lowest-ticket waiter has no
+  /// earlier waiter, so it's blocked only by a car already in the box — which
+  /// will clear — and then proceeds; the next follows once it clears.
+  /// Non-conflicting movements all release together. Pure and side-effect free
   /// so the invariant is unit-testable without splines or live cars.
   @visibleForTesting
   static Set<Object> computeReleases(
@@ -605,9 +616,15 @@ class IntersectionTile extends TileBase {
     bool Function(Object a, Object b) conflicts,
   ) {
     final result = Set<Object>.from(going);
+    final waitingAhead = <Object>[]; // earlier-ticket waiters not (yet) released
     for (final w in waitersByTicket) {
-      final blocked = result.any((g) => g != w && conflicts(w, g));
-      if (!blocked) result.add(w);
+      final blocked = result.any((g) => g != w && conflicts(w, g)) ||
+          waitingAhead.any((s) => conflicts(w, s));
+      if (blocked) {
+        waitingAhead.add(w);
+      } else {
+        result.add(w);
+      }
     }
     return result;
   }
@@ -695,10 +712,28 @@ class IntersectionTile extends TileBase {
               npc.spline!, npc.distanceTravelled, pedestrians),
     };
 
-    // A crossing pedestrian is ahead in the player's path → a legitimate wait
-    // (and what exempts the road-block penalty). Entry and exit (turn) crossings
-    // are both covered by walking the player's own spline — no separate cone.
-    _pedBlockingPlayer = playerPedStop != null;
+    // A crossing pedestrian ahead in the player's path → a legitimate wait (and
+    // what exempts the road-block penalty). The live spline above covers it once
+    // the player has committed its turn; but with late-bound steering a player
+    // stopped in the box for the EXIT crossing of a COMMANDED turn can still be
+    // on the straight through-spine (hasn't leaned in yet) — so that crossing is
+    // off its probed path AND off the road-block detector's forward cone (it's to
+    // the side), and the wait wrongly reads as blocking the box. So also probe
+    // the commanded turn path, projected to the player's progress along it. This
+    // is LENIENCY-ONLY — it can only suppress a false road-block, never raise a
+    // fault — so unlike the fail-to-yield seam it can safely key off commanded
+    // intent. (Arbitration keeps the live-spline [playerPedStop]: its
+    // `yieldingAtEntry` is judged AT THE LINE, where the entry crossing sits on
+    // both paths.)
+    final commandedPedStop =
+        (maneuver != Maneuver.straight && pedestrians.isNotEmpty)
+            ? _pedStopOnPath(
+                _commandedPath,
+                _commandedPath
+                    .distanceAtNearest(worldToLocal(playerCar.position)),
+                pedestrians)
+            : null;
+    _pedBlockingPlayer = playerPedStop != null || commandedPedStop != null;
 
     // Traffic-light control: the signal phase arbitrates the box, so the
     // all-way-stop ticketing below is bypassed entirely. Everything shared —
@@ -853,8 +888,11 @@ class IntersectionTile extends TileBase {
         (pZone == _Zone.inBox && _otherCarInBox) ||
         _pedBlockingPlayer; // waiting for someone on the crossing is rational
 
-    // Player stop-sign / fail-to-yield detection (at-line verdict, all-way stop).
+    // Player stop-sign verdict (judged at the line) + fail-to-yield (deferred to
+    // the player's commit point inside the box, where the spline-steered turn is
+    // finally known — see [_checkPlayerApproach] / [_checkAllStopYield]).
     _checkPlayerApproach(playerCar);
+    _checkAllStopYield(playerCar);
     // US rule 4 (straight-before-left on simultaneous arrival): a left-turning
     // player gives way to an oncoming straight car crossing with the right of
     // way. The at-line check exempts left-vs-oncoming (pulling into the box to
@@ -1070,6 +1108,39 @@ class IntersectionTile extends TileBase {
   static bool leftTurnCutsOffOncoming(double oncomingSpeed, double gapToPlayer) {
     if (oncomingSpeed < kReactMinSpeed) return false;
     return DriverReactionDetector.isForcedHardBrake(oncomingSpeed, gapToPlayer);
+  }
+
+  /// Fail-to-yield at the all-way stop, judged at the player's COMMIT point, not
+  /// at the stop line. With spline-steered turns the player doesn't take the
+  /// commanded turn until inside the box, so at the line the live spline still
+  /// reads as the through-spine and [_playerShouldYield] (built from that spline
+  /// in [_arbitrateAllWayStop]) over-reports conflicts — a right-turner was being
+  /// flagged against a left-turner whose arc it never crosses. Mirrors
+  /// [_checkLeftYieldToOncoming]: key off what the player actually STEERED, not
+  /// the commanded maneuver, so a non-conflicting movement clears with no fault.
+  ///
+  /// "Committed" = a turn has been steered ([_committedExit] != straight) OR the
+  /// player is past the box centre still on the through-spine (which never
+  /// diverges, so by the centre the straight is committed too). A right turn
+  /// exits east at the lane line and never reaches the centre — hence the
+  /// [_committedExit] arm carries it. A stopped player is exempt: waiting in the
+  /// box (e.g. a left turn giving way to oncoming) is never a fault. One fault
+  /// per approach (shared [_yieldViolationFired] latch, reset far-south in
+  /// [_checkPlayerApproach]).
+  void _checkAllStopYield(PlayerCar playerCar) {
+    if (_yieldViolationFired || !_stopLineCrossed) return;
+    if (!_playerShouldYield || _playerReleased) return;
+    if (playerCar.speed <= kStopSpeedThreshold) return; // waiting isn't a fault
+    final committed = _committedExit != Maneuver.straight ||
+        _pastBoxCentre(Heading.north, worldToLocal(playerCar.position));
+    if (!committed) return;
+
+    _yieldViolationFired = true;
+    debugPrint('[INTERSECTION] fail-to-yield @ commit: '
+        'exit=${_committedExit.name} '
+        'speed=${playerCar.speed.toStringAsFixed(0)}');
+    GameBus.instance.emit(YieldViolationEvent(speedAtLine: playerCar.speed));
+    _markYieldTargets(playerCar);
   }
 
   // ---------------------------------------------------------------------------
@@ -1525,25 +1596,20 @@ class IntersectionTile extends TileBase {
       // right into the same exit) don't trigger a fail-to-yield on a left turn;
       // only actually colliding does. Cross-traffic still counts.
       if (_committedExit == Maneuver.left && o.heading == Heading.south) continue;
-      // A conflicting car past the box centre, or gone, is on its way out —
-      // pulling out behind it as it clears is normal, not a fail-to-yield (the
-      // lenient past-centre test, not the strict straight-only `_isClearing`, so
-      // a turner that's nearly out also stops counting). URBAN ONLY, also exempt
-      // a car that's merely still MOVING through the box: there the stop line is
-      // pushed ~102u back (see [_stopLineGap]), so a crossing car clears before a
-      // player at the line can reach the junction. On INTERURBAN the line sits
-      // ~44u back with no push-back, so a moving but not-yet-past-centre car can
-      // still be in the player's path on arrival — keep the strict test there,
-      // else a real T-bone goes unflagged. (Residual: a car crawling just above
-      // kStopSpeedThreshold in urban may not actually clear; the deeper fix is to
-      // reason about time-to-conflict rather than sample at a line far from the
-      // box. What's left counting: an APPROACHING priority car — the real
-      // queue-jump — or a car stopped/blocking IN the box.)
+      // A conflicting car past the box centre (its conflict point), or gone, is
+      // on its way out — pulling out behind it as it clears is normal, not a
+      // fail-to-yield (the lenient past-centre test, not the strict straight-only
+      // `_isClearing`, so a turner that's nearly out also stops counting). The
+      // verdict now fires at the PLAYER'S OWN commit point inside the box (see
+      // [_checkAllStopYield]), not ~102u back at the line, so the old urban
+      // shortcut — exempt any moving in-box car because it "clears before the
+      // faraway player arrives" — no longer holds: the player is right here. Use
+      // the strict past-centre test for both locales (what interurban always
+      // did), else a car the player actually T-bones goes unflagged. What's left
+      // counting: an APPROACHING priority car (the real queue-jump) or one still
+      // short of its conflict point in the box.
       final oz = zone[o.id];
-      final clearingInBox = oz == _Zone.inBox &&
-          ((locale == LocaleType.urban && o.speed > kStopSpeedThreshold) ||
-              _pastBoxCentre(o.heading, o.localPos));
-      if (oz == _Zone.past || clearingInBox) {
+      if (oz == _Zone.past || _pastBoxCentre(o.heading, o.localPos)) {
         continue;
       }
       final ot = _ticket[o.id];
@@ -1885,18 +1951,15 @@ class IntersectionTile extends TileBase {
       }
     }
 
-    // The painted line is the decision point — evaluated once as the player
-    // crosses it, where the player COMMITS. (Sampling later, at the box edge,
-    // doesn't work: in urban the line sits ~102u back, and by the time the player
-    // covers that the dynamic arbitration has cleared every conflict — the fault
-    // would never fire.) Two independent faults can be raised here:
-    //   - stop-sign: no complete stop was made (mandatory regardless of
-    //     traffic — the whole all-way-stop lesson);
-    //   - fail-to-yield: the player crossed while a conflicting car had the
-    //     right of way. A car ALREADY CROSSING the box is exempted upstream (see
-    //     [_playerYieldTargets]) — it's on its way out and a player still at the
-    //     line will reach the junction after it clears — so this fires only for
-    //     an APPROACHING priority car (the genuine queue-jump).
+    // The painted line is the decision point for the STOP-SIGN fault (and the
+    // red-light fault) — evaluated once as the player crosses it, where the
+    // mandatory complete stop is judged regardless of traffic (the whole
+    // all-way-stop lesson). The FAIL-TO-YIELD fault is NOT judged here: with
+    // spline-steered turns the player hasn't taken the commanded turn yet at the
+    // line, so the live spline still reads as the through-spine and would
+    // over-report conflicts for a turn (a right-turner flagged against a
+    // left-turner it never crosses). It's deferred to the player's own commit
+    // point inside the box — see [_checkAllStopYield].
     if (!_stopLineCrossed && localY <= _playerStopLineY) {
       _stopLineCrossed = true;
       scenario.onPlayerPassedYieldLine(playerCar.speed);
@@ -1920,15 +1983,6 @@ class IntersectionTile extends TileBase {
               'minSpeed=${_minApproachSpeed.toStringAsFixed(0)}');
           GameBus.instance.emit(
               StopSignViolationEvent(minSpeedObserved: _minApproachSpeed));
-        }
-
-        if (_playerShouldYield && !_playerReleased && !_yieldViolationFired) {
-          _yieldViolationFired = true;
-          debugPrint('[INTERSECTION] fail-to-yield @ line: '
-              'speed=${playerCar.speed.toStringAsFixed(0)}');
-          GameBus.instance
-              .emit(YieldViolationEvent(speedAtLine: playerCar.speed));
-          _markYieldTargets(playerCar);
         }
       }
     }

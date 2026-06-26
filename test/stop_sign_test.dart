@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:traffic_game/tiles/scenarios/scenario_base.dart';
 import 'package:traffic_game/tiles/scenarios/stop_sign_scenario.dart';
 import 'package:traffic_game/tiles/scenarios/scenario_registry.dart';
+import 'package:traffic_game/core/maneuver.dart';
 import 'package:traffic_game/tiles/tile_registry.dart';
 import 'package:traffic_game/tiles/definitions/intersection_tile.dart';
 
@@ -142,6 +143,33 @@ void main() {
       expect(freed, {'B'},
           reason: 'A is frozen for a pedestrian (box free) — B proceeds');
     });
+
+    // ARRIVAL ORDER over a blocked senior: a later car must NOT take its turn
+    // while an earlier car it conflicts with is still waiting — even if that
+    // senior is itself held up by a third car the latecomer doesn't conflict
+    // with. This is the "waved through ahead of the car that came first" bug:
+    // D is crossing the box; O arrived before the player and conflicts with D
+    // (so O is stuck); the player P arrived last, is clear of D, but conflicts
+    // with O. P must wait for O, not leapfrog it.
+    test('a late car does not leapfrog an earlier car blocked by a third', () {
+      bool conflicts(Object a, Object b) {
+        final s = {a, b};
+        return s.containsAll({'O', 'D'}) || s.containsAll({'P', 'O'});
+      }
+      final out = IntersectionTile.computeReleases(['O', 'P'], {'D'}, conflicts);
+      expect(out, {'D'},
+          reason: 'P must wait for the earlier O, not pass it while it is held');
+    });
+
+    // The flip side: arrival order only gates CONFLICTING cars. A latecomer
+    // whose path crosses nobody still waiting proceeds — independent movements
+    // are never queued behind an unrelated blocked car (no over-blocking).
+    test('a later car still goes when it conflicts with no waiting senior', () {
+      bool conflicts(Object a, Object b) => {a, b}.containsAll({'O', 'D'});
+      final out = IntersectionTile.computeReleases(['O', 'P'], {'D'}, conflicts);
+      expect(out, {'D', 'P'},
+          reason: 'P conflicts with nobody waiting → not gated by the queue');
+    });
   });
 
   // The scope decision for "stop blocking cross traffic": ONLY a car at/behind
@@ -158,6 +186,45 @@ void main() {
     });
     test('at the line with a clear path is not yielding', () {
       expect(IntersectionTile.isPedYieldingAtEntry(true, null), isFalse);
+    });
+  });
+
+  // The premise of the deferred fail-to-yield (_checkAllStopYield): the player's
+  // conflict is judged from the path it actually STEERED, not the through-spine
+  // it still sits on at the stop line. Heading { north=0, east=1, south=2,
+  // west=3 } — the player approaches from the south going NORTH (lane 0 = the
+  // unrotated player geometry); an NPC entering from the player's RIGHT travels
+  // WEST (lane 3). The reported bug: a right-turning player faulted for failing
+  // to yield to that NPC's LEFT turn — two arcs that never cross.
+  group('fail-to-yield conflict geometry (player vs the approach on its right)', () {
+    test('a right turn clears every movement from the right; straight does not',
+        () {
+      final tile = IntersectionTile(maneuver: Maneuver.right);
+      // All-way stop keeps all three movements, so [maneuver.index] picks the
+      // right spline (the light variant drops left and would misalign).
+      expect(tile.npcLanes[3].length, 3);
+
+      const player = 0; // north (player geometry)
+      const fromRight = 3; // west (enters from the player's right)
+
+      // At the line the steered turn isn't taken yet, so the player reads as
+      // going STRAIGHT — which DOES cross the right-side left turn. Judging the
+      // fault there (the old behaviour) is the false positive.
+      expect(
+        tile.npcMovementsConflict(
+            player, Maneuver.straight, fromRight, Maneuver.left),
+        isTrue,
+        reason: 'a straight player crosses the left-turner — the over-report',
+      );
+      // The movement actually commanded/steered: a right turn hugs the near
+      // corner and crosses NOTHING from the approach on its right.
+      for (final nm in Maneuver.values) {
+        expect(
+          tile.npcMovementsConflict(player, Maneuver.right, fromRight, nm),
+          isFalse,
+          reason: 'a right turn should clear $nm from the right',
+        );
+      }
     });
   });
 }
