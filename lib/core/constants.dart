@@ -170,6 +170,14 @@ const double kPedMinSpawnDist = 240.0;
 /// A pedestrian respects a car's bounding box: it holds at the box rather than
 /// walking into it. This is how far ahead (its next step) it probes for a car.
 const double kPedStepProbe = 10.0;
+/// A crossing pedestrian won't STEP OFF the curb once its walk window (the
+/// crossed road's red) has fewer than this many seconds left — the "flashing
+/// don't-walk" rule, so it doesn't get caught mid-box and block the traffic
+/// that's about to get the green. Only gates the start: a ped already off the
+/// curb is committed and always finishes. Tunable; raise it to hold later
+/// entries longer. (It can't stop a SLOW ped that entered early from blocking —
+/// that's [kPedMinWalkSpeed]'s job: the crossing is wider than 18 u/s × window.)
+const double kPedDontStartWindow = 2.5;
 /// Keep-right lateral offset (world units) every pedestrian rides off its
 /// route's centreline. Two pedestrians meeting head-on on a shared centreline
 /// each keep to their own right, so they slide to OPPOSITE sides (2× this = 24

@@ -383,37 +383,95 @@ void main() {
   });
 
   group('pedMustHoldForSignal — walk-phase compliance', () {
+    // A wide-open window: comfortably more than kPedDontStartWindow left, so the
+    // tail-hold never trips and these read pure green/red compliance.
+    const openWindow = 12.5;
     test('no crossing on the next step → never held', () {
       expect(
           IntersectionLightTile.pedMustHoldForSignal(
-              -1, 0, 1, SignalPhase.red, SignalPhase.red),
+              -1, 0, 1, SignalPhase.red, SignalPhase.red,
+              crossedRoadRedRemaining: openWindow),
           isFalse);
     });
     test('a ped about to cross the N–S road holds while it is not red', () {
       // band 0 crosses N–S; not yet committed (well on the entry side).
       expect(
           IntersectionLightTile.pedMustHoldForSignal(
-              0, 250, -1, SignalPhase.green, SignalPhase.red),
+              0, 250, -1, SignalPhase.green, SignalPhase.red,
+              crossedRoadRedRemaining: openWindow),
           isTrue,
           reason: 'N–S green = cars moving = walk must wait');
       expect(
           IntersectionLightTile.pedMustHoldForSignal(
-              0, 250, -1, SignalPhase.red, SignalPhase.green),
+              0, 250, -1, SignalPhase.red, SignalPhase.green,
+              crossedRoadRedRemaining: openWindow),
           isFalse,
-          reason: 'N–S red = cars stopped = walk');
+          reason: 'N–S red with the window wide open = walk');
     });
     test('a committed ped (past the near edge) finishes crossing, never re-held', () {
       // travel +x, already past the near carriageway edge in its direction.
       expect(
           IntersectionLightTile.pedMustHoldForSignal(
-              0, 0, 1, SignalPhase.green, SignalPhase.red),
+              0, 0, 1, SignalPhase.green, SignalPhase.red,
+              crossedRoadRedRemaining: openWindow),
           isFalse);
     });
     test('bands 2/3 track the E–W phase, not N–S', () {
       expect(
           IntersectionLightTile.pedMustHoldForSignal(
-              3, 250, -1, SignalPhase.red, SignalPhase.green),
+              3, 250, -1, SignalPhase.red, SignalPhase.green,
+              crossedRoadRedRemaining: openWindow),
           isTrue);
+    });
+  });
+
+  group('pedMustHoldForSignal — flashing-don\'t-walk tail (no late entries)', () {
+    test('window about to close → an uncommitted ped holds though the road is red', () {
+      // N–S red (cars stopped) but only 1s of walk window left.
+      expect(
+          IntersectionLightTile.pedMustHoldForSignal(
+              0, 250, -1, SignalPhase.red, SignalPhase.green,
+              crossedRoadRedRemaining: 1.0),
+          isTrue,
+          reason: "can't finish before the flip → wait for the next cycle");
+    });
+    test('early in the window → an uncommitted ped steps off and walks', () {
+      expect(
+          IntersectionLightTile.pedMustHoldForSignal(
+              0, 250, -1, SignalPhase.red, SignalPhase.green,
+              crossedRoadRedRemaining: 8.0),
+          isFalse,
+          reason: 'plenty of window left → go');
+    });
+    test('the tail-hold sits BEHIND the committed guard — a ped mid-box never freezes', () {
+      // Window all but closed (0.5s), but this ped is already committed
+      // (off the near curb). It must still finish — freezing it in the lane
+      // would be strictly worse than the late-entry it guards against.
+      expect(
+          IntersectionLightTile.pedMustHoldForSignal(
+              0, 0, 1, SignalPhase.red, SignalPhase.green,
+              crossedRoadRedRemaining: 0.5),
+          isFalse);
+    });
+  });
+
+  group('TrafficSignalController.redRemainingFor — walk-window countdown', () {
+    test('0 while the road is green/yellow; counts its red down toward the flip', () {
+      final c = TrafficSignalController(); // seed 0 → starts at t=0
+      expect(c.phaseFor(northSouth: true), SignalPhase.green);
+      expect(c.redRemainingFor(northSouth: true), 0.0,
+          reason: 'N–S green → no red to count down');
+      // Advance to the instant N–S turns red (after its green + yellow).
+      c.tick(TrafficSignalController.greenSeconds +
+          TrafficSignalController.yellowSeconds);
+      expect(c.phaseFor(northSouth: true), SignalPhase.red);
+      expect(c.redRemainingFor(northSouth: true), closeTo(12.5, 1e-9),
+          reason: 'a full red window (cycle − green − yellow)');
+      // Roll to the tail of that window — under the don\'t-start threshold.
+      c.tick(11.5);
+      expect(c.redRemainingFor(northSouth: true), closeTo(1.0, 1e-9));
+      expect(1.0 < kPedDontStartWindow, isTrue,
+          reason: 'this tail is exactly where a new entry must be refused');
     });
   });
 

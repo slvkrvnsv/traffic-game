@@ -471,14 +471,18 @@ class TileManager extends Component {
     }
   }
 
-  /// A tile whose exit is decided late (the 2-lane light, "miss = straight")
-  /// flags [TileBase.exitChanged] when the player commits their lane at the box;
-  /// re-place its downstream tiles against the now-final exit.
+  /// An intersection late-binds its exit: it flags [TileBase.exitChanged] the
+  /// instant the player STEERS a turn at the box. The straight-ahead corridor
+  /// streamed in on the assumption of going straight is now stale, and it is
+  /// still in view (the box is a tile-edge ahead of the camera) — so [_rePlaceAfter]
+  /// would teleport that visible tile onto the turn, popping it out from under the
+  /// camera. Redirect instead: orphan the stale tiles where they are and stream a
+  /// fresh corridor down the real exit (see [_redirectCorridorAfter]).
   void _commitExitChanges() {
     final at = activeTile;
     if (at != null && at.exitChanged) {
       at.exitChanged = false;
-      _rePlaceAfter(at);
+      _redirectCorridorAfter(at);
     }
   }
 
@@ -649,6 +653,34 @@ class TileManager extends Component {
       }
       _disposePedSpawners(tile);
       _createPedSpawnersForTile(tile);
+    }
+  }
+
+  /// The player STEERED a turn the streamed-in straight corridor didn't predict.
+  /// Unlike [_rePlaceAfter] — which teleports the downstream tiles onto the new
+  /// exit, popping the still-visible straight-ahead one out from under the camera
+  /// the moment the car snaps onto the turn — ORPHAN the stale tiles: hand them to
+  /// the trailing set untouched. They keep rendering exactly where they are (the
+  /// junction still draws its straight arm, so they stay connected to the road)
+  /// and the ordinary distance cull reclaims them once the camera has turned away
+  /// — the "let it leave the viewport first" the pop never did. A fresh corridor
+  /// is then streamed down the now-committed exit. One tile object can't be both
+  /// the receding straight scenery and the new road on the turn, so the stale
+  /// tiles are left behind and replaced rather than moved.
+  void _redirectCorridorAfter(TileBase boundTile) {
+    final idx = _activeTiles.indexOf(boundTile);
+    if (idx < 0) return;
+    // Detach every downstream tile onto the trailing set, untouched in place. No
+    // ped-spawner churn (unlike _rePlaceAfter): the tile doesn't move, so its
+    // spawners stay valid and the trailing cull disposes them with the tile.
+    final orphans = _activeTiles.sublist(idx + 1);
+    _activeTiles.removeRange(idx + 1, _activeTiles.length);
+    _trailingTiles.addAll(orphans);
+    // Restream the look-ahead buffer down the committed exit. _spawnNextTile
+    // builds off _activeTiles.last (the junction), whose worldExit now points the
+    // turned way, so the fresh tiles land on the real corridor.
+    while (_activeTiles.length < kTilesAhead + 1) {
+      _spawnNextTile();
     }
   }
 

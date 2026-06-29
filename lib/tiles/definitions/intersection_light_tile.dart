@@ -156,6 +156,12 @@ class IntersectionLightTile extends TileBase {
 
   static const double _curbRadius = 80.0;
 
+  /// Radius of the curb return at each inner box-mouth corner — where a pavement
+  /// corner pokes into the conflict box and turning traffic sweeps around it.
+  /// Kept inside the 40-wide pavement corner (so it never spills road colour into
+  /// the grass), matching the 1-lane intersection's treatment.
+  static const double _curbReturnRadius = 36.0;
+
   // --- Pedestrian crossings (urban only) ------------------------------------
   static const double _crosswalkHalf = 18.0;
 
@@ -1461,17 +1467,29 @@ class IntersectionLightTile extends TileBase {
   }
 
   /// Whether a crossing ped stepping onto zebra [band] must hold for the signal:
-  /// bands 0/1 cross the N–S road (hold while it's not red), 2/3 the E–W road. A
-  /// ped past the near carriageway edge in its travel direction is committed and
-  /// never re-held (finishes crossing). Pure → unit-tested.
+  /// bands 0/1 cross the N–S road (gated by N–S phase), 2/3 the E–W road. Holds
+  /// while the crossed road is not red (conflicting traffic moving) AND — the
+  /// flashing-don't-walk rule — for the last [crossedRoadRedRemaining] tail of an
+  /// otherwise-open window: with under [dontStartWindow] left, don't step off the
+  /// curb only to get caught mid-box when the light flips. A ped past the near
+  /// carriageway edge in its travel direction is committed and never re-held
+  /// (the tail-hold sits BEHIND that early-return, so nothing freezes in-lane).
+  /// Pure → unit-tested.
   @visibleForTesting
   static bool pedMustHoldForSignal(int band, double alongFromCentre,
-      double travelSign, SignalPhase nsPhase, SignalPhase ewPhase) {
+      double travelSign, SignalPhase nsPhase, SignalPhase ewPhase,
+      {required double crossedRoadRedRemaining,
+      double dontStartWindow = kPedDontStartWindow}) {
     if (band < 0) return false;
     final committed = alongFromCentre * travelSign >= -_half;
-    if (committed) return false;
+    if (committed) return false; // off the curb → finish, never re-held
     final crossesNS = band == 0 || band == 1;
-    return (crossesNS ? nsPhase : ewPhase) != SignalPhase.red;
+    if ((crossesNS ? nsPhase : ewPhase) != SignalPhase.red) {
+      return true; // conflicting traffic has the green/yellow
+    }
+    // Window open but about to close: hold for the next cycle instead of
+    // stepping into a crossing the light won't keep clear long enough.
+    return crossedRoadRedRemaining < dontStartWindow;
   }
 
   @override
@@ -1485,7 +1503,9 @@ class IntersectionLightTile extends TileBase {
     final along = crossesNS ? local.x - _cx : local.y - _cy;
     final sign = (crossesNS ? localDir.x : localDir.y).sign;
     return pedMustHoldForSignal(
-        band, along, sign, _phaseOf(_Heading.north), _phaseOf(_Heading.east));
+        band, along, sign, _phaseOf(_Heading.north), _phaseOf(_Heading.east),
+        crossedRoadRedRemaining:
+            _signal.redRemainingFor(northSouth: crossesNS));
   }
 
   bool _playerOnBand(PlayerCar playerCar, int idx) {
@@ -1563,6 +1583,7 @@ class IntersectionLightTile extends TileBase {
     _drawRoundedCurbs(canvas);
     _drawRoads(canvas);
     _drawBox(canvas);
+    _drawCurbReturns(canvas); // round the inner corners cars turn around
     _drawMarkings(canvas);
     _drawStopLines(canvas);
     _drawLaneArrows(canvas);
@@ -1612,9 +1633,24 @@ class IntersectionLightTile extends TileBase {
     _curbWedge(canvas, r, b, 1, 1, p);
   }
 
-  void _curbWedge(
-      Canvas canvas, double cornerX, double cornerY, int sx, int sy, Paint p) {
-    const r = _curbRadius;
+  /// Rounds the four INNER corners — where a pavement corner pokes into the box
+  /// and turning traffic sweeps past — by shaving the sharp 90° tip off the
+  /// pavement and repainting it road colour, leaving a rounded curb return. The
+  /// grass-side corners are handled by [_drawRoundedCurbs]. Each ([sx], [sy])
+  /// points from the box corner OUT into its pavement-corner block. The box is
+  /// off-centre vertically (cx≠cy), so the corners split into X and Y edges.
+  void _drawCurbReturns(Canvas canvas) {
+    final road = Paint()..color = const Color(0xFF424242);
+    const loX = _cx - _half, hiX = _cx + _half; // 440 / 760 — box X edges
+    const loY = _cy - _half, hiY = _cy + _half; // 660 / 980 — box Y edges
+    _curbWedge(canvas, hiX, hiY, 1, 1, road, _curbReturnRadius); // SE
+    _curbWedge(canvas, loX, hiY, -1, 1, road, _curbReturnRadius); // SW
+    _curbWedge(canvas, hiX, loY, 1, -1, road, _curbReturnRadius); // NE
+    _curbWedge(canvas, loX, loY, -1, -1, road, _curbReturnRadius); // NW
+  }
+
+  void _curbWedge(Canvas canvas, double cornerX, double cornerY, int sx, int sy,
+      Paint p, [double r = _curbRadius]) {
     final center = Offset(cornerX + sx * r, cornerY + sy * r);
     final p1 = Offset(cornerX, cornerY + sy * r);
     final p2 = Offset(cornerX + sx * r, cornerY);

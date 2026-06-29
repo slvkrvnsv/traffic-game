@@ -45,4 +45,16 @@ class TrafficSignalController {
     if (local < greenSeconds + yellowSeconds) return SignalPhase.yellow;
     return SignalPhase.red;
   }
+
+  /// Seconds the [northSouth] (or cross) group's current RED still has to run —
+  /// i.e. how long until it next turns GREEN. Returns 0 when that group is not
+  /// red (green/yellow). A crossing pedestrian's walk window IS the crossed
+  /// road's red, so this is "time left to start crossing": the gate uses it to
+  /// refuse a step-off when the window is about to close. Pure → unit-tested.
+  double redRemainingFor({required bool northSouth}) {
+    final local = northSouth ? _t : (_t + _slot) % _cycle;
+    const redStart = greenSeconds + yellowSeconds; // 9.5
+    if (local < redStart) return 0.0; // green or yellow — not red
+    return _cycle - local; // until local wraps to 0 (green again)
+  }
 }
