@@ -9,6 +9,7 @@ import '../rules/rule_validator.dart';
 import '../rules/violation_detector.dart';
 import '../tiles/tile_manager.dart';
 import '../tiles/tile_registry.dart';
+import 'signal_head_overlay.dart';
 
 /// Root world component. Owns the tile manager, player car, and rule system.
 ///
@@ -71,6 +72,10 @@ class GameWorld extends World {
       testControl: testControl,
     );
     add(tileManager);
+
+    // Overhead signal heads paint above the cars (the tile layer is underneath
+    // them), so a car stopped at a light can't cover the head it's waiting on.
+    add(SignalHeadOverlay(tileManager: tileManager));
 
     violationDetector = ViolationDetector(
       playerCar: playerCar,

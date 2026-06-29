@@ -30,11 +30,29 @@ abstract class ScenarioBase {
   void onYieldViolation(double speedAtLine) {}
   void onStopSignViolation(double minSpeed) {}
   void onRedLightViolation() {}
+
+  /// Player entered the box on a yellow they had room to stop for comfortably.
+  void onYellowRun() {}
+
+  /// Player stopped with the nose past the stop line on red (over the line).
+  void onStopLineViolation() {}
+
+  /// Player went on green before cross traffic had finished clearing the box.
+  void onGunGreen() {}
+
   void onBlockedIntersection() {}
 
   /// Player was in the wrong lane for the commanded maneuver at a multi-lane
   /// intersection (e.g. turned left from a through-only lane). A logged fault.
   void onWrongLane() {}
+
+  /// Player missed the turn — ended up somewhere other than the instruction
+  /// (drove straight, or took the other turn, instead of the commanded one). A
+  /// logged fault.
+  void onMissedTurn() {}
+
+  /// Player turned into the far lane of the target road instead of the nearest.
+  void onWrongExitLane() {}
 
   void onPlayerPassedYieldLine(double speed) {}
 

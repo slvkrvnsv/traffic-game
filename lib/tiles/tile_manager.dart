@@ -147,6 +147,13 @@ class TileManager extends Component {
   TileBase? get currentTile =>
       _activeTiles.isNotEmpty ? _activeTiles.first : null;
 
+  /// Every tile currently in the world — active AND trailing — i.e. everything
+  /// still being rendered. Walked by SignalHeadOverlay each frame so a junction
+  /// you've just left keeps its heads until it's culled off-screen (matching
+  /// the tile's own road, which renders until then). Active-only would pop the
+  /// heads the instant you cross the seam, while the junction is still visible.
+  List<TileBase> get liveTiles => [..._activeTiles, ..._trailingTiles];
+
   // ---------------------------------------------------------------------------
   // Bootstrap
   // ---------------------------------------------------------------------------
@@ -451,6 +458,16 @@ class TileManager extends Component {
   void _updateNpcSensors(double dt) {
     for (final tile in _activeTiles) {
       tile.updateNpcSensors(dt, playerCar, _spawner.allNpcs, pedestrians);
+    }
+    // Trailing tiles keep their through-traffic driving (so cars don't freeze at
+    // the seam behind a resting player — see [_advanceNpcsAcrossSeams]), so they
+    // must still GOVERN those NPCs. Without this, an NPC on a junction the player
+    // has driven past cruised on the brain's default right-of-way and drove
+    // straight through pedestrians and stopped cars. Player grading is suppressed
+    // — the player isn't on these tiles anymore.
+    for (final tile in _trailingTiles) {
+      tile.updateNpcSensors(dt, playerCar, _spawner.allNpcs, pedestrians,
+          gradePlayer: false);
     }
   }
 

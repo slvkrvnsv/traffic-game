@@ -97,6 +97,13 @@ const double kYieldSpeedThreshold = kYieldSpeedThresholdKmh / kSpeedToKmh;
 const double kStopSpeedThresholdKmh = 2.4; // effectively stopped (stop sign)
 const double kStopSpeedThreshold = kStopSpeedThresholdKmh / kSpeedToKmh;
 
+/// Yellow-light "dilemma zone" judgment: at yellow onset, you should stop if you
+/// could do so COMFORTABLY. Use a gentle decel (≈half [kNpcBrakeDecel]=225, the
+/// hard/reliable one) plus a reaction creep — a hard decel would say you can
+/// always stop and over-fault. Tunable.
+const double kComfortBrakeDecel = 110.0; // u/s² — comfortable, not slamming
+const double kYellowReactionSeconds = 0.7; // creep before braking begins
+
 // ---------------------------------------------------------------------------
 // Tile hand-off
 // ---------------------------------------------------------------------------
@@ -116,6 +123,12 @@ const double kSeamWaitTimeoutSeconds = 1.5;
 
 /// Pedestrian render priority (cars use CarBase priority 5/10).
 const int kPedestrianPriority = 2;
+
+/// Overhead traffic-signal heads render ABOVE the cars (5/10) — a car stopped
+/// at the light must never cover the head it's waiting on — but below the
+/// reaction bubbles (100). Painted by SignalHeadOverlay, not the tile layer
+/// (which sits at priority 0, under everything).
+const int kSignalOverlayPriority = 50;
 
 // ---------------------------------------------------------------------------
 // Locale (urban / interurban) — see LocaleType

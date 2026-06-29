@@ -28,6 +28,24 @@ class TrafficLightScenario extends ScenarioBase {
         const ScenarioResult.failed('Ran a red light — you crossed on red.');
   }
 
+  /// Entered the box on a yellow with room to stop comfortably — the dilemma-zone
+  /// fault (committing through a yellow you can't safely stop for is fine).
+  @override
+  void onYellowRun() {
+    _violated = true;
+    result = const ScenarioResult.failed(
+        'Ran a yellow — you had room to stop for it.');
+  }
+
+  /// Stopped with the nose past the stop line on red — over the line / blocking
+  /// the crosswalk.
+  @override
+  void onStopLineViolation() {
+    _violated = true;
+    result = const ScenarioResult.failed(
+        'Stopped over the line — your nose was past the stop line on red.');
+  }
+
   /// A permissive left turn must give way to oncoming through-traffic. Turning
   /// across an oncoming car that had the right of way is a fail-to-yield (the
   /// tile detects it; this only records it). Non-fatal — a logged fault — unless
@@ -37,6 +55,15 @@ class TrafficLightScenario extends ScenarioBase {
     _violated = true;
     result = const ScenarioResult.failed(
         'Turned left without yielding — oncoming traffic had the right of way.');
+  }
+
+  /// Went on green before the junction cleared — cross traffic (a late
+  /// straggler) was still in the box. Failure to make sure it was clear.
+  @override
+  void onGunGreen() {
+    _violated = true;
+    result = const ScenarioResult.failed(
+        'Went before the junction was clear — cross traffic was still in the box.');
   }
 
   /// Entering the box without room to clear it — left stuck inside, blocking

@@ -15,6 +15,7 @@ import 'package:traffic_game/tiles/tile_base.dart';
 import 'package:traffic_game/tiles/tile_manager.dart';
 import 'package:traffic_game/tiles/definitions/intersection_tile.dart';
 import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
+import 'package:traffic_game/tiles/definitions/lane_config.dart';
 
 /// Two GLOBAL exam faults (no per-tile grading): driving a commanded TURN or a
 /// LANE CHANGE without the matching blinker armed. Detected at the universal
@@ -89,7 +90,7 @@ void main() {
   }
 
   // --- Lane-change drive (corridor merge), cloned from corridor_merge_test ---
-  IntersectionLightTile placeLight() => IntersectionLightTile()
+  IntersectionLightTile placeLight() => IntersectionLightTile(config: LaneConfig.l1)
     ..place(worldPosition: Vector2.zero(), orientation: 0.0);
 
   void driveCorridorMerge(IntersectionLightTile tile, bool fromInner, double steer) {

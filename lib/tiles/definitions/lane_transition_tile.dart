@@ -269,8 +269,9 @@ class LaneTransitionTile extends TileBase {
     double dt,
     PlayerCar playerCar,
     List<NpcCar> allNpcs,
-    List<Pedestrian> pedestrians,
-  ) {
+    List<Pedestrian> pedestrians, {
+    bool gradePlayer = true,
+  }) {
     // ordinary lead-car gaps (no crossing peds on a connector)
     super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
 
@@ -286,7 +287,7 @@ class LaneTransitionTile extends TileBase {
         extraSurvivingY:
             playerOnThrough ? [worldToLocal(playerCar.position).y] : const [],
       );
-      _updatePlayerMergeGrading(playerCar);
+      if (gradePlayer) _updatePlayerMergeGrading(playerCar);
     } else {
       // Widen: the oncoming side is the mirror — its outer lane NARROWS, so the
       // SAME yield keeps oncoming cars from phasing through each other as they

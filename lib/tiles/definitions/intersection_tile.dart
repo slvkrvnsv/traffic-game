@@ -671,8 +671,9 @@ class IntersectionTile extends TileBase {
     double dt,
     PlayerCar playerCar,
     List<NpcCar> allNpcs,
-    List<Pedestrian> pedestrians,
-  ) {
+    List<Pedestrian> pedestrians, {
+    bool gradePlayer = true,
+  }) {
     // lead-car gaps etc. Crossing-pedestrian yielding is handled in the apply
     // loop below: a car is HELD at its stop line while a pedestrian is on the
     // zebra ahead (it never stops on the crossing — once past the line it
@@ -743,6 +744,10 @@ class IntersectionTile extends TileBase {
     // signage differ. (Left turns aren't offered to NPCs here — see [npcLanes].)
     if (control == IntersectionControl.trafficLight) {
       _applySignalToNpcs(pedStopById, allNpcs, playerCar);
+      // Player grading — active tile only; the NPC apply above keeps trailing
+      // through-traffic governed (no ghosting through peds/cars on a junction the
+      // player has passed), but a passed junction must not fault a far player.
+      if (!gradePlayer) return;
       _signalPlayerWait(playerCar);
       _checkPlayerApproach(playerCar); // resets latches + red-light fault
       // Permissive left gives way to oncoming on the SAME green. Not checked on
@@ -868,6 +873,11 @@ class IntersectionTile extends TileBase {
       // than flooring it — especially when it's taking a hesitating player's turn.
       npc.brain.speedCap = go ? kNpcTurnSpeed : null;
     }
+
+    // Player grading below — active tile only. The arbiter + apply loop above
+    // already governed every NPC, so trailing through-traffic stays correct;
+    // don't judge a player that has driven past this tile.
+    if (!gradePlayer) return;
 
     // The player legitimately waits while approaching/inside the box until the
     // arbiter releases it — used to exempt that stop from the road-blocking
@@ -2071,11 +2081,11 @@ class IntersectionTile extends TileBase {
     _drawCrosswalks(canvas); // urban zebras (no-op interurban)
     if (kDebugMode && DebugState.showDebug) _drawZebraDebug(canvas); // detection box overlay
     drawDecorations(canvas); // grass-corner scenery
-    if (control == IntersectionControl.trafficLight) {
-      _drawSignalHeads(canvas); // cycling lights instead of STOP signs
-    } else {
+    if (control != IntersectionControl.trafficLight) {
       _drawStopSigns(canvas);
     }
+    // Traffic-light heads hang over the lane and are painted by
+    // SignalHeadOverlay (renderSignalHeadsOverlay), above the car layer.
     debugRenderSplines(canvas);
     if (kDebugMode && DebugState.showDebug) _drawDebugTurns(canvas);
   }
@@ -2262,8 +2272,20 @@ class IntersectionTile extends TileBase {
 
   static const double _signalLampRadius = 8.0;
 
-  /// One signal head per approach, on the near-side curb to the right of the
-  /// approaching lane, each showing that approach's live phase.
+  /// Head scale — a hair smaller than full so a car waiting under the overhead
+  /// head still reads through on either side (head ≈17 wide over an 80 lane).
+  static const double _headScale = 1 / 1.5;
+
+  /// Painted above the car layer by SignalHeadOverlay. One mast arm per
+  /// approach: a slim pole on the curb, an arm reaching out over the
+  /// carriageway, and a head hung above the approaching lane — so the footpath
+  /// stays clear and the head sits over your lane, not on the pavement.
+  @override
+  void renderSignalHeadsOverlay(Canvas canvas) {
+    if (control != IntersectionControl.trafficLight) return;
+    _drawSignalHeads(canvas);
+  }
+
   void _drawSignalHeads(Canvas canvas) {
     _drawSignalHeadFor(canvas, const Offset(0, -1), _phaseOf(Heading.north));
     _drawSignalHeadFor(canvas, const Offset(0, 1), _phaseOf(Heading.south));
@@ -2271,15 +2293,30 @@ class IntersectionTile extends TileBase {
     _drawSignalHeadFor(canvas, const Offset(-1, 0), _phaseOf(Heading.west));
   }
 
-  /// Places and orients one head for traffic travelling along [travel]: just
-  /// before the stop line (near-side), out on the curb right of the lane.
+  /// Mast arm for traffic travelling along [travel]: pole on the curb, head
+  /// over the lane centre, both just before the stop line (near-side).
   void _drawSignalHeadFor(Canvas canvas, Offset travel, SignalPhase phase) {
     final right = Offset(-travel.dy, travel.dx);
     final back = _halfBox + _stopLineGap + _signSetback;
-    const outward = _halfBox + 14.0; // on the pavement, right of the lane
-    final center = const Offset(_cx, _cy) - travel * back + right * outward;
+    final base = const Offset(_cx, _cy) - travel * back;
     final angle = math.atan2(travel.dx, -travel.dy);
-    _drawSignalHead(canvas, center, angle, phase);
+
+    final pole = base + right * (_halfBox + 6.0); // on the curb's road edge
+    final head = base + right * _laneOffset; // over the lane centre
+    _drawMastArm(canvas, pole, head);
+    _drawSignalHead(canvas, head, angle, phase);
+  }
+
+  /// The curb pole and the arm a head hangs from.
+  void _drawMastArm(Canvas canvas, Offset pole, Offset head) {
+    canvas.drawLine(
+        pole,
+        head,
+        Paint()
+          ..color = const Color(0xFF4A4D52)
+          ..strokeWidth = 5
+          ..strokeCap = StrokeCap.round);
+    canvas.drawCircle(pole, 6, Paint()..color = const Color(0xFF2A2D32));
   }
 
   void _drawSignalHead(
@@ -2287,6 +2324,7 @@ class IntersectionTile extends TileBase {
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.rotate(angle);
+    canvas.scale(_headScale);
 
     final housing = RRect.fromRectAndRadius(
         const Rect.fromLTRB(-13, -30, 13, 30), const Radius.circular(6));

@@ -3,6 +3,7 @@ import 'package:flame/components.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:traffic_game/core/constants.dart';
+import 'package:traffic_game/core/game_bus.dart';
 import 'package:traffic_game/core/maneuver.dart';
 import 'package:traffic_game/cars/player_car.dart';
 import 'package:traffic_game/core/spline.dart';
@@ -13,6 +14,7 @@ import 'package:traffic_game/tiles/tile_registry.dart';
 import 'package:traffic_game/tiles/scenarios/scenario_base.dart';
 import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
 import 'package:traffic_game/tiles/definitions/intersection_tile.dart';
+import 'package:traffic_game/tiles/definitions/lane_config.dart';
 import 'package:traffic_game/tiles/definitions/lane_transition_tile.dart';
 
 /// End-to-end through the REAL [TileManager] (the standalone fork tests drive the
@@ -29,7 +31,11 @@ void main() {
     IntersectionLightTile.register();
     IntersectionTile.register();
     LaneTransitionTile.register();
+    // Pin the light tile to L1 so the turn-driving tests are deterministic (the
+    // registry/manager builds tiles and can't inject a config per tile).
+    IntersectionLightTile.debugConfigOverride = LaneConfig.l1;
   });
+  tearDownAll(() => IntersectionLightTile.debugConfigOverride = null);
   tearDown(InputState.instance.reset);
 
   /// Bootstrap a forced-intersection world, drag LEFT, optionally lift the finger
@@ -87,6 +93,48 @@ void main() {
 
   test('hold the wheel left into the tap → take the left turn', () {
     expect(driveAndForkBranch(release: false), 'inner-left');
+  });
+
+  test('grade-at-clear fires through the REAL manager: straight from the inner '
+      '(left-only) lane is a logged lane fault', () async {
+    // Closes the end-to-end gap the unit tests can't reach: the player PHYSICALLY
+    // clears the box, _gradeLaneDiscipline runs at that moment on the entry spline
+    // (not after a silent hand-off → the `did == null` trapdoor), and it emits.
+    // Pinned to L1, the inner lane is left-only, so driving STRAIGHT is a fault for
+    // EVERY random command — wrong lane for a commanded straight/right, wrong
+    // maneuver (the dodge) for a commanded left — so no command control is needed.
+    final faults = <GameEvent>[];
+    final sub = GameBus.instance.stream
+        .where((e) =>
+            e is WrongLaneEvent ||
+            e is MissedTurnEvent ||
+            e is WrongExitLaneEvent)
+        .listen(faults.add);
+
+    final player = PlayerCar();
+    final tm = TileManager(
+      playerCar: player,
+      world: World(),
+      pedestrians: <Pedestrian>[],
+      ambientPedestrians: <Pedestrian>[],
+      testMode: TileType.intersectionLight,
+    );
+    tm.bootstrap();
+    InputState.instance.setGasLevel(1.0);
+    final tile = tm.activeTile as IntersectionLightTile;
+    for (int i = 0; i < 2000; i++) {
+      player.speed = kmhToUnits(35); // pin → keeps moving straight through
+      player.update(1 / 60);
+      tm.update(1 / 60);
+      // Past the box far edge (clear at local y < cy−half = 660) and then some.
+      if (tile.worldToLocal(player.position).y < 560) break;
+    }
+    await Future<void>.delayed(Duration.zero); // drain the async broadcast bus
+    await sub.cancel();
+
+    expect(faults, isNotEmpty,
+        reason: 'clearing the box straight from the left-only inner lane must be '
+            'graded a lane fault — the full clear → grade → emit chain');
   });
 
   test('MERGE through the REAL manager: hold right from inner → onto outer, no jump',

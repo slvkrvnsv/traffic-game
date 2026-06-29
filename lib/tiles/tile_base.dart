@@ -277,6 +277,16 @@ abstract class TileBase extends PositionComponent {
     decoration.render(canvas);
   }
 
+  /// Overlay hook: draw overhead signal heads ABOVE the vehicle layer.
+  ///
+  /// The tile layer renders at the bottom of the world (priority 0) — under the
+  /// cars (5/10) — so a head hung over a lane would hide beneath the very car
+  /// stopped at the light. SignalHeadOverlay (a high-priority world component)
+  /// calls this with the canvas already moved into this tile's local space, the
+  /// same space [render] draws in. Default: nothing; signal-controlled
+  /// intersections override it.
+  void renderSignalHeadsOverlay(Canvas canvas) {}
+
   /// Routes for pedestrians *leaving the buildings*: from a building door out to
   /// the nearest sidewalk/crossing line, then along it to the far edge (crossing
   /// a road at the zebra when that line is a crossing). Built once after [place].
@@ -454,12 +464,21 @@ abstract class TileBase extends PositionComponent {
 
   /// Update all sensor inputs for NPCs belonging to this tile.
   /// Override in subclasses to add intersection-specific logic on top.
+  ///
+  /// [gradePlayer] is false when the player has already driven past this tile
+  /// (it's trailing): NPC GOVERNANCE (lead-car / signal / pedestrian holds) must
+  /// still run — trailing through-traffic keeps driving, so un-governed it would
+  /// ghost through everyone — but PLAYER-FACING grading (faults, wait flags,
+  /// exit-commit) must NOT, or a passed junction faults a far-away player. The
+  /// base pass is pure NPC governance, so it ignores the flag; overrides that
+  /// add player grading gate it.
   void updateNpcSensors(
     double dt,
     PlayerCar playerCar,
     List<NpcCar> allNpcs,
-    List<Pedestrian> pedestrians,
-  ) {
+    List<Pedestrian> pedestrians, {
+    bool gradePlayer = true,
+  }) {
     for (final npc in npcs) {
       npc.brain.leadCarDistance = _leadCarGap(npc, playerCar, allNpcs);
       npc.brain.distanceToTurnSignal = _distanceToTurn(npc);

@@ -12,6 +12,7 @@ import 'package:traffic_game/tiles/tile_base.dart';
 import 'package:traffic_game/tiles/tile_manager.dart';
 import 'package:traffic_game/tiles/definitions/intersection_tile.dart';
 import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
+import 'package:traffic_game/tiles/definitions/lane_config.dart';
 import 'package:traffic_game/tiles/definitions/lane_transition_tile.dart';
 
 /// Blinkers are MANUAL now — there is no automatic / curvature signalling for
@@ -198,7 +199,7 @@ void main() {
     // there too, so self-cancel isn't silently dead on light-tile turns.
     test('also self-cancels on the 2-lane light tile (left from the inner lane)',
         () {
-      final tile = IntersectionLightTile()
+      final tile = IntersectionLightTile(config: LaneConfig.l1)
         ..place(worldPosition: Vector2.zero(), orientation: 0.0);
       final p = PlayerCar();
       p.assignSpline(tile.approach(inner: true), worldOffset: Vector2.zero());
@@ -231,7 +232,7 @@ void main() {
   });
 
   group('Manual blinker self-cancels on a committed merge (the haptic-click moment)', () {
-    IntersectionLightTile place() => IntersectionLightTile()
+    IntersectionLightTile place() => IntersectionLightTile(config: LaneConfig.l1)
       ..place(worldPosition: Vector2.zero(), orientation: 0.0);
 
     // Drive a real corridor merge — the SLIDE commit that fires the haptic — from

@@ -38,10 +38,33 @@ class StopSignViolationEvent extends GameEvent {
 /// Player crossed a red light.
 class RedLightViolationEvent extends GameEvent {}
 
+/// Player entered the box on a YELLOW they had room to stop for comfortably — the
+/// "dilemma zone" exam fault (committing through a yellow you can't stop for is
+/// fine). Non-fatal — a logged exam fault.
+class YellowRunEvent extends GameEvent {}
+
+/// Player stopped with the nose past the stop line on red — over the line / into
+/// the crosswalk. Non-fatal — a logged exam fault.
+class StopLineViolationEvent extends GameEvent {}
+
+/// Player proceeded on green into a box cross traffic hadn't finished clearing —
+/// "gunned the green" without making sure the junction was clear. Non-fatal.
+class GunGreenEvent extends GameEvent {}
+
 /// Player entered the conflict box in the wrong lane for the commanded maneuver
 /// (a multi-lane intersection: e.g. turning left from a through/right lane, or
 /// going straight from a left-turn-only lane). Non-fatal — a logged exam fault.
 class WrongLaneEvent extends GameEvent {}
+
+/// Player MISSED THE TURN — ended up somewhere other than the instruction (drove
+/// straight, or took the other turn, instead of the commanded maneuver). The
+/// headline task error: it fires whenever the OUTCOME is wrong, ahead of (and
+/// regardless of) any lane error. Non-fatal — a logged exam fault.
+class MissedTurnEvent extends GameEvent {}
+
+/// Player turned into the far lane of the target road instead of the nearest
+/// one (the US "turn into the closest lane" rule). Non-fatal — a logged fault.
+class WrongExitLaneEvent extends GameEvent {}
 
 /// Player changed lanes (or merged) without the turn signal armed that way.
 /// Global — detected at the lane-change commit on any tile, not scenario-gated.

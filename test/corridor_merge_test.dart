@@ -5,6 +5,7 @@ import 'package:traffic_game/core/constants.dart';
 import 'package:traffic_game/cars/player_car.dart';
 import 'package:traffic_game/input/input_state.dart';
 import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
+import 'package:traffic_game/tiles/definitions/lane_config.dart';
 
 /// REGRESSION GUARD for the seam dead-band merge jump.
 ///
@@ -29,7 +30,7 @@ void main() {
   });
   tearDown(InputState.instance.reset);
 
-  IntersectionLightTile place() => IntersectionLightTile()
+  IntersectionLightTile place() => IntersectionLightTile(config: LaneConfig.l1)
     ..place(worldPosition: Vector2.zero(), orientation: 0.0);
 
   /// Place the player mid-corridor on [fromInner]'s spine at local [startY], lane

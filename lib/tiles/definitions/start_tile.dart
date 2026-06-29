@@ -72,9 +72,11 @@ class StartTile extends TileBase {
 
   @override
   void updateNpcSensors(double dt, PlayerCar playerCar, List<NpcCar> allNpcs,
-      List<Pedestrian> pedestrians) {
+      List<Pedestrian> pedestrians, {bool gradePlayer = true}) {
     super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
-    if (!_rolledOut && worldToLocal(playerCar.position).y < _startY - 30) {
+    if (gradePlayer &&
+        !_rolledOut &&
+        worldToLocal(playerCar.position).y < _startY - 30) {
       _rolledOut = true; // pulled away — normal rules from here
     }
   }

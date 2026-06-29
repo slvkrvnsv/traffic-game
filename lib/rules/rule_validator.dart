@@ -71,6 +71,21 @@ class RuleValidator extends Component {
       scenario?.onRedLightViolation();
       _checkResult(scenario, kind: ExamErrorType.redLightViolation);
     }));
+    _subs.add(GameBus.instance.on<YellowRunEvent>().listen((_) {
+      final scenario = _activeScenario;
+      scenario?.onYellowRun();
+      _checkResult(scenario, kind: ExamErrorType.ranYellow);
+    }));
+    _subs.add(GameBus.instance.on<StopLineViolationEvent>().listen((_) {
+      final scenario = _activeScenario;
+      scenario?.onStopLineViolation();
+      _checkResult(scenario, kind: ExamErrorType.stopLineViolation);
+    }));
+    _subs.add(GameBus.instance.on<GunGreenEvent>().listen((_) {
+      final scenario = _activeScenario;
+      scenario?.onGunGreen();
+      _checkResult(scenario, kind: ExamErrorType.gunGreen);
+    }));
     _subs.add(GameBus.instance.on<BlockedIntersectionEvent>().listen((_) {
       final scenario = _activeScenario;
       scenario?.onBlockedIntersection();
@@ -80,6 +95,16 @@ class RuleValidator extends Component {
       final scenario = _activeScenario;
       scenario?.onWrongLane();
       _checkResult(scenario, kind: ExamErrorType.wrongLane);
+    }));
+    _subs.add(GameBus.instance.on<MissedTurnEvent>().listen((_) {
+      final scenario = _activeScenario;
+      scenario?.onMissedTurn();
+      _checkResult(scenario, kind: ExamErrorType.missedTurn);
+    }));
+    _subs.add(GameBus.instance.on<WrongExitLaneEvent>().listen((_) {
+      final scenario = _activeScenario;
+      scenario?.onWrongExitLane();
+      _checkResult(scenario, kind: ExamErrorType.wrongExitLane);
     }));
 
     // An NPC reacting to a player cut-off is bubble-only feedback on most tiles;

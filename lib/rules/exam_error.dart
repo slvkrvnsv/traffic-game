@@ -6,9 +6,28 @@ enum ExamErrorType {
   failedToYield,
   stopSignViolation,
   redLightViolation,
+
+  /// Entered the box on a yellow you had room to stop for (the dilemma zone).
+  ranYellow,
+
+  /// Stopped with the nose past the stop line on red (over the line / crosswalk).
+  stopLineViolation,
+
+  /// Proceeded on green into a junction cross traffic hadn't finished clearing.
+  gunGreen,
+
   roadBlocking,
   blockedIntersection,
   wrongLane,
+
+  /// Missed the turn — ended up somewhere other than the instruction (drove
+  /// straight, or took the other turn). The headline task error, ahead of lane
+  /// faults.
+  missedTurn,
+
+  /// Turned into the far lane of the target road instead of the nearest one
+  /// (the US "turn into the closest lane" rule).
+  wrongExitLane,
 
   /// Changed lanes (or merged) without the turn signal armed that way. Detected
   /// globally at the lane-change commit — not tied to any one tile.
@@ -42,9 +61,14 @@ extension ExamErrorTypeLabel on ExamErrorType {
         ExamErrorType.failedToYield => 'Failed to yield',
         ExamErrorType.stopSignViolation => 'Missed a stop sign',
         ExamErrorType.redLightViolation => 'Ran a red light',
+        ExamErrorType.ranYellow => 'Ran a yellow you could stop for',
+        ExamErrorType.stopLineViolation => 'Stopped over the line',
+        ExamErrorType.gunGreen => 'Went before the junction was clear',
         ExamErrorType.roadBlocking => 'Blocked the road',
         ExamErrorType.blockedIntersection => 'Blocked the intersection',
         ExamErrorType.wrongLane => 'Wrong lane for the turn',
+        ExamErrorType.missedTurn => 'Missed your turn',
+        ExamErrorType.wrongExitLane => 'Turned into the wrong lane',
         ExamErrorType.laneChangeWithoutSignal => 'Changed lanes without signalling',
         ExamErrorType.turnWithoutSignal => 'Turned without signalling',
         ExamErrorType.scenarioFault => 'Failed the maneuver',
@@ -56,9 +80,14 @@ extension ExamErrorTypeLabel on ExamErrorType {
         ExamErrorType.failedToYield ||
         ExamErrorType.stopSignViolation ||
         ExamErrorType.redLightViolation ||
+        ExamErrorType.ranYellow ||
+        ExamErrorType.stopLineViolation ||
+        ExamErrorType.gunGreen ||
         ExamErrorType.roadBlocking ||
         ExamErrorType.blockedIntersection ||
         ExamErrorType.wrongLane ||
+        ExamErrorType.missedTurn ||
+        ExamErrorType.wrongExitLane ||
         ExamErrorType.laneChangeWithoutSignal ||
         ExamErrorType.turnWithoutSignal ||
         ExamErrorType.scenarioFault =>

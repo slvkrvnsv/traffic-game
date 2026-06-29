@@ -10,6 +10,7 @@ import 'package:traffic_game/input/input_state.dart';
 import 'package:traffic_game/tiles/tile_base.dart';
 import 'package:traffic_game/tiles/tile_manager.dart';
 import 'package:traffic_game/tiles/definitions/intersection_light_tile.dart';
+import 'package:traffic_game/tiles/definitions/lane_config.dart';
 
 /// End-to-end of the UNIVERSAL STEERING on the light intersection: drive a player up
 /// a continuous through-lane SPINE, and resolve TURN TAPS exactly as
@@ -26,7 +27,7 @@ void main() {
   });
   tearDown(InputState.instance.reset);
 
-  IntersectionLightTile place() => IntersectionLightTile()
+  IntersectionLightTile place() => IntersectionLightTile(config: LaneConfig.l1)
     ..place(worldPosition: Vector2.zero(), orientation: 0.0);
 
   PlayerCar onApproach(IntersectionLightTile tile, {required bool inner}) {

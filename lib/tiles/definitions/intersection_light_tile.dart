@@ -19,11 +19,24 @@ import '../tile_registry.dart';
 import '../traffic_signal.dart';
 import '../scenarios/scenario_base.dart';
 import '../scenarios/lane_discipline_scenario.dart';
+import 'lane_config.dart';
 
 /// Travel heading through the intersection. Ordered to match the 4-fold
 /// rotational symmetry: the south approach (player, heading [north]) maps onto
 /// east/south/west by `_rotateQuarters(p, k)` with k = heading index.
 enum _Heading { north, east, south, west }
+
+/// The lane-discipline fault a box traversal earns, or null for a clean run.
+/// Ordered by priority — the grade reports the first that applies: MISSED THE
+/// TURN (ended up somewhere other than the instruction) dominates a wrong lane
+/// (the RIGHT move from the wrong lane), which dominates a wrong exit lane (right
+/// move + lane, far lane instead of nearest).
+enum LaneFault { missedTurn, wrongLane, wrongExitLane }
+
+/// What crossing the box gate against the signal earns (null = clean): ran a red
+/// (or rolled a right-on-red without stopping), or ran a yellow you could have
+/// stopped for. The stop-line-encroachment fault is positional, judged separately.
+enum SignalGateFault { ranRed, ranYellow }
 
 /// A 2-lane-each-way, **traffic-light** intersection that teaches **lane
 /// discipline** on top of signal compliance.
@@ -35,11 +48,12 @@ enum _Heading { north, east, south, west }
 /// tile is **light-only** — the signal phase arbitrates the box, so there is no
 /// ticketing to perturb.
 ///
-/// The exam task is ALWAYS a lane change: the commanded [maneuver] is chosen
-/// (late-bound from the player's entry lane in [bindPlayerEntry]) so the player
-/// always has to move to the legal lane for it — left from the inner
-/// (centre-side) lane, straight/right from the outer (curb) lane (L1 layout:
-/// inner = left-only ◄, outer = through+right ▲►).
+/// The exam task is lane discipline: each run picks a [LaneConfig] (what each
+/// lane is for) and commands a RANDOM maneuver from its pool in [bindPlayerEntry];
+/// the player must be in a legal lane AND actually perform it (graded on the way
+/// out — wrong lane / didn't follow it / wrong exit lane). The painted arrows and
+/// overhead placards advertise the active config; the L1 preset is inner =
+/// left-only ◄, outer = through+right ▲►.
 ///
 /// The TURN is chosen with the wheel via TURN TAPS on a continuous spine: the player
 /// follows ONE whole through-lane spline per lane (entry to exit), and the turns hang
@@ -55,19 +69,35 @@ class IntersectionLightTile extends TileBase {
     super.locale,
     ScenarioBase? scenario,
     math.Random? rng,
+    LaneConfig? config,
   })  : _rng = rng ?? math.Random(),
         super(
           tileType: TileType.intersectionLight,
           scenario: scenario ?? LaneDisciplineScenario(),
           size: Vector2(_w, _h),
-        );
+        ) {
+    // The lane layout for this run: injected (tests/curriculum), a test-mode
+    // override (integration tests run through the registry/[TileManager], which
+    // can't inject a config per tile), else a random preset. Picked once; the
+    // renderer, the player branches and the grader all read it, so the layout is
+    // graded, not just painted.
+    _config = config ??
+        debugConfigOverride ??
+        LaneConfig.presets[_rng.nextInt(LaneConfig.presets.length)];
+  }
 
   final math.Random _rng;
+  late final LaneConfig _config;
 
-  /// The commanded maneuver — late-bound in [bindPlayerEntry] to require the
-  /// lane the player did NOT enter (so a lane change is always the task).
-  /// Defaults to straight until bound (the player enters the inner lane on a
-  /// cold bootstrap, which legally requires the outer lane → straight/right).
+  /// Test-only override for the random lane-config pick, so integration tests
+  /// that drive a specific turn through the registry/[TileManager] stay
+  /// deterministic. Null in production (a real run gets a random preset).
+  @visibleForTesting
+  static LaneConfig? debugConfigOverride;
+
+  /// The commanded maneuver — late-bound in [bindPlayerEntry] to a uniformly
+  /// random pick from the active config's commandable pool. Defaults to straight
+  /// until bound.
   Maneuver _maneuver = Maneuver.straight;
   bool _maneuverBound = false;
 
@@ -114,9 +144,13 @@ class IntersectionLightTile extends TileBase {
   /// Within this distance before the box a car counts for right-of-way.
   static const double _approachDistance = 300.0;
 
-  /// Painted stop line offset from the box edge. Pushed clear of the urban
-  /// zebra so a car halted at the line sits outside the crossing.
-  double get _stopLineGap => locale == LocaleType.urban ? 62.0 : 30.0;
+  /// Painted stop line offset from the box edge. Tracks the urban zebra outward
+  /// (derived from [_crosswalkOffset]) so a car halted at the line — nose ~a
+  /// [kStopLineSetback] before it — still sits clear of the (moved-out) crossing.
+  /// Interurban has no crossing → keeps its tight line.
+  double get _stopLineGap => locale == LocaleType.urban
+      ? _crosswalkOffset + _crosswalkHalf + kStopLineSetback - _half // 90
+      : 30.0;
 
   double get _stopLineFromCentre => _half + _stopLineGap;
 
@@ -124,7 +158,17 @@ class IntersectionLightTile extends TileBase {
 
   // --- Pedestrian crossings (urban only) ------------------------------------
   static const double _crosswalkHalf = 18.0;
-  static const double _crosswalkOffset = _half + 30.0; // 190 — zebra band centre
+
+  /// Zebra band centre, offset from the tile centre. Pushed clear of the box so
+  /// the FOUR crossings' detection bands don't OVERLAP at the box corners — at
+  /// +30 a perpendicular crossing's band reached back across the corner, so a
+  /// ped strolling one corner was mis-attributed to the cross-street's crossing
+  /// and false-tripped NPC yields + the player's give-way fault. Separation holds
+  /// while `_crosswalkOffset - _zebraBandMargin > _half + _zebraEnterMargin`
+  /// (asserted in [_pedStopOnPath]); +58 gives the same ~20px corner clearance the
+  /// 1-lane intersection uses. The stop line + signal heads track it via
+  /// [_stopLineGap]. One knob — dial it back if the junction reads too spread.
+  static const double _crosswalkOffset = _half + 58.0; // 218 — was 190 (bands overlapped)
   // The box is off-centre vertically vs. horizontally now (cx≠cy), so the
   // sidewalk lines split into X (vertical sidewalks) and Y (horizontal ones).
   static const double _swLoX = _cx - _crosswalkOffset; // 410
@@ -182,8 +226,8 @@ class IntersectionLightTile extends TileBase {
   // ---------------------------------------------------------------------------
   // Signal
   // ---------------------------------------------------------------------------
-  late final TrafficSignalController _signal =
-      TrafficSignalController(seed: position.x.round() + position.y.round() * 31);
+  late final TrafficSignalController _signal = TrafficSignalController(
+      seed: position.x.round() + position.y.round() * 31);
 
   bool _isNorthSouth(_Heading h) => h == _Heading.north || h == _Heading.south;
   SignalPhase _phaseOf(_Heading h) => _signal.phaseFor(northSouth: _isNorthSouth(h));
@@ -382,8 +426,19 @@ class IntersectionLightTile extends TileBase {
   /// so you must be on the matching spine (merge there first) to take that turn.
   @override
   List<Spline> playerBranches(Spline spine) {
-    if (identical(spine, _innerThrough)) return [_nearLeft, _farLeft];
-    if (identical(spine, _outerThrough)) return [_nearRight, _farRight];
+    // A lane only offers its turn branches if the config says that lane turns
+    // there (left lives on the inner spine, right on the outer); otherwise the
+    // lane is straight-through and the player just stays on the spine.
+    if (identical(spine, _innerThrough)) {
+      return _config.allows(isInner: true, m: Maneuver.left)
+          ? [_nearLeft, _farLeft]
+          : const [];
+    }
+    if (identical(spine, _outerThrough)) {
+      return _config.allows(isInner: false, m: Maneuver.right)
+          ? [_nearRight, _farRight]
+          : const [];
+    }
     return const [];
   }
 
@@ -442,27 +497,157 @@ class IntersectionLightTile extends TileBase {
     return null;
   }
 
-  /// Which lane is LEGAL for a maneuver: left needs the inner (centre-side) lane,
-  /// straight/right the outer (curb) lane. (Merge-first already enforces this in
-  /// practice; kept for grading/tests.)
-  static bool laneIsLegal({required bool inner, required Maneuver m}) =>
-      m == Maneuver.left ? inner : !inner;
+  /// The inner-lane LEFT-turn movement per approach — kept by identity so the
+  /// NPC signal logic can tell a left-turner (which must yield to oncoming
+  /// through) from a through/right car.
+  late final Map<_Heading, Spline> _npcLeftSpline = {
+    for (final h in _Heading.values)
+      h: Spline(_movement(h, _innerOff, Maneuver.left)),
+  };
+
+  /// Arc-length along each left-turn spline to the **bend** — where the turner
+  /// waits, nosed into the curve, yielding to oncoming. It's the point ON the arc
+  /// nearest the box centre (the apex, where the car is angled into the turn), not
+  /// the arc-START (which is still straight, before the curve — waiting there reads
+  /// as "stopped across the lanes before the bend"). Nudged a half-car deeper so it
+  /// rests clearly on the curve. Arc-length (not a straight gap) because the wait
+  /// point is mid-curve, where the path has turned away from the approach heading.
+  late final Map<_Heading, double> _npcLeftBendDist = {
+    for (final h in _Heading.values)
+      h: _npcLeftSpline[h]!.distanceAtNearest(_centre) + kCarLength * 0.5,
+  };
+
+  /// NPC LEFT turns are offered on only ONE approach per opposing pair — NORTH
+  /// (the player's own approach, so they still see left-turners in their lane) and
+  /// EAST (the cross axis). Two OPPOSING left-turners cross head-on through the box
+  /// centre and — being speed-only on a fixed spline, no steering — can't slip
+  /// around each other the way the (human-steered) player does; the only safe
+  /// resolution was a "wait at the line" stagger that kept reading as idiotic
+  /// (user: "staying like morons on the stop line"). Offering lefts on
+  /// non-opposing approaches removes the conflict BY CONSTRUCTION: south/west never
+  /// turn left, and north-left vs east-left are split across the two green phases
+  /// (N–S vs E–W) so two box-crossing lefts are never live at once. The old
+  /// `_opposingLeftHolds` stagger is deleted with it. The user weighed this against
+  /// rerouting the arcs to pass left-to-left and chose it — that reroute is
+  /// geometrically impossible here anyway (the inner approach lane of one direction
+  /// and the inner exit lane of its opposite cross at a fixed point regardless of
+  /// turn radius — verified by an all-relative-positions OBB sweep).
+  static bool _npcLeftAllowed(_Heading h) =>
+      h == _Heading.north || h == _Heading.east;
 
   /// NPC lanes — maneuver-INDEPENDENT (cross/through traffic is unrelated to the
-  /// player's commanded turn). 8 groups: each of the 4 approaches has an inner
-  /// lane (straight only) and an outer lane (straight or right). Left turns are
-  /// dropped at a signal so a green box is always conflict-free. Group index
-  /// `k*2 + lane` → heading `_Heading.values[k]`, lane 0 = inner, 1 = outer.
+  /// player's commanded turn). 8 groups: each approach has an inner lane (straight,
+  /// plus LEFT where [_npcLeftAllowed]) and an outer lane (straight or right). Group
+  /// index `k*2 + lane` → heading `_Heading.values[k]`, lane 0 = inner, 1 = outer.
   @override
   late final List<List<Spline>> npcLanes = [
     for (final h in _Heading.values) ...[
-      [Spline(_movement(h, _innerOff, Maneuver.straight))], // inner: straight
+      [
+        Spline(_movement(h, _innerOff, Maneuver.straight)),
+        if (_npcLeftAllowed(h)) _npcLeftSpline[h]!,
+      ],
       [
         for (final m in const [Maneuver.straight, Maneuver.right])
           Spline(_movement(h, _outerOff, m)), // outer: straight or right
       ],
     ],
   ];
+
+  static _Heading _opposite(_Heading h) => _rightTurn(_rightTurn(h));
+
+  bool _isLeftTurnNpc(NpcCar npc, _Heading heading) =>
+      npc.spline != null && identical(npc.spline, _npcLeftSpline[heading]);
+
+  /// Test hook: the inner-lane LEFT-turn spline + its NPC `laneIndex` for the
+  /// SOUTH approach — the approach whose oncoming-through is the northbound player.
+  /// Lets a test place a left-turner at the bend and check it yields to the player,
+  /// without leaking `_Heading`.
+  @visibleForTesting
+  (Spline, int) get debugSouthLeftTurner =>
+      (_npcLeftSpline[_Heading.south]!, _Heading.values.indexOf(_Heading.south) * 2);
+
+  /// Pure: should a left-turning NPC commit through the box? Like a real left-
+  /// turner it pulls INTO the junction to the **bend** (the arc apex, nosed into
+  /// the curve) and yields there to oncoming-through, not back at the stop line:
+  ///  - past the bend → mid-turn, always finish (never re-hold / freeze);
+  ///  - short of the line → enter the box only on green and only into a clear gap
+  ///    (on red it holds at the line — the caller's stop target does that);
+  ///  - in the box (entered on green) → wait at the bend for oncoming, then complete.
+  /// The last branch is also phase-end clearance: at yellow→red the oncoming brakes
+  /// ([oncomingBlocks] lifts) and the waiting turner completes during all-red — no
+  /// separate logic, no yellow-instant dart. Static + pure → unit-tested.
+  @visibleForTesting
+  static bool npcLeftCommits({
+    required bool green,
+    required double gapToLine,
+    required double gapToBend,
+    required bool oncomingBlocks,
+  }) {
+    if (gapToBend <= 0) return true; // past the bend — finish the turn
+    if (gapToLine > 0) return green && !oncomingBlocks; // approach: enter on a green gap
+    return !oncomingBlocks; // at the bend — hold for oncoming, then complete
+  }
+
+  /// Is oncoming-through traffic close enough that a left turn from [heading]
+  /// would cut it off? Conservative — ANY moving opposing-through (an NPC, or the
+  /// player when they're the opposing through) in the approach/box holds the
+  /// turn. A turner held at the bend can't cross until this is clear, so it never
+  /// T-bones; and it lifts when the oncoming stops, so it never gridlocks.
+  bool _oncomingThroughBlocks(_Heading heading, NpcCar turner,
+      List<NpcCar> allNpcs, PlayerCar playerCar) {
+    final opp = _opposite(heading);
+    for (final other in allNpcs) {
+      if (identical(other, turner) || other.spline == null) continue;
+      if (other.laneIndex < 0 || other.laneIndex >= npcLanes.length) continue;
+      if (_headingOfLane(other.laneIndex) != opp) continue;
+      if (!_movementStraight(other.spline!)) continue; // oncoming THROUGH only
+      final oLocal = worldToLocal(other.position);
+      final z = _zoneOf(opp, oLocal);
+      if (z != _Zone.approaching && z != _Zone.inBox) continue;
+      if (other.speed <= kStopSpeedThreshold) continue; // stopped doesn't block
+      // Once it's past the centre it has cleared the turn's crossing point — it no
+      // longer blocks (release the turner now, not when it finally leaves the box).
+      if (z == _Zone.inBox && _passedCentre(opp, oLocal)) continue;
+      return true;
+    }
+    // The player heads north (through), so it is the oncoming through for a
+    // turner whose opposite approach is north — i.e. a south-heading left-turner.
+    if (opp == _Heading.north) {
+      final pLocal = worldToLocal(playerCar.position);
+      final pz = _zoneOf(_Heading.north, pLocal);
+      if ((pz == _Zone.approaching || pz == _Zone.inBox) &&
+          playerCar.speed > kStopSpeedThreshold) {
+        // A straight-through player past the centre has cleared the crossing; a
+        // TURNING player stays a block (their left is head-on with this turn, so
+        // releasing on "past centre" — which the curve invalidates — could T-bone).
+        final cleared = pz == _Zone.inBox &&
+            _committedExit == Maneuver.straight &&
+            _passedCentre(_Heading.north, pLocal);
+        if (!cleared) return true;
+      }
+    }
+    return false;
+  }
+
+  /// Has a STRAIGHT car with [heading] passed the box centre in its travel
+  /// direction? The left-turn exit lanes sit `_innerOff` short of centre on the
+  /// side the oncoming enters from, so past centre the car has already cleared any
+  /// left-turn's crossing point (with that `_innerOff` margin + the turner's own
+  /// pull-away time). Only valid for a straight mover — a turning car's curve
+  /// breaks the "centre ⇒ past the crossing" relation.
+  bool _passedCentre(_Heading heading, Vector2 localPos) {
+    switch (heading) {
+      case _Heading.north:
+        return localPos.y < _cy; // moving up (−y)
+      case _Heading.south:
+        return localPos.y > _cy; // moving down (+y)
+      case _Heading.east:
+        return localPos.x > _cx; // moving right (+x)
+      case _Heading.west:
+        return localPos.x < _cx; // moving left (−x)
+    }
+  }
+
 
   @override
   late final List<Spline> npcPaths = [for (final lane in npcLanes) ...lane];
@@ -487,26 +672,20 @@ class IntersectionLightTile extends TileBase {
       };
 
   // ---------------------------------------------------------------------------
-  // Late-bind the maneuver to the entry lane → always a lane-change task.
+  // Late-bind the commanded maneuver: a random pick from the config's pool.
   // ---------------------------------------------------------------------------
 
   @override
   void bindPlayerEntry(Vector2 playerCentreWorld) {
     if (_maneuverBound) return;
     _maneuverBound = true;
-    // The two approach-lane entry points are maneuver-independent ((640,1200) /
-    // (720,1200)), so we can read the entered lane before playerPaths is built.
-    final innerW = localToWorld(Vector2(_cx + _innerOff, _h));
-    final outerW = localToWorld(Vector2(_cx + _outerOff, _h));
-    final enteredInner =
-        playerCentreWorld.distanceTo(innerW) <= playerCentreWorld.distanceTo(outerW);
-    // Command the maneuver that requires the OTHER lane, so a lane change is
-    // always part of the task. The player paths themselves are maneuver-
-    // independent (both lanes straight; the turn is chosen at the box with the
-    // wheel), so there is nothing to rebuild here.
-    _maneuver = enteredInner
-        ? (_rng.nextBool() ? Maneuver.straight : Maneuver.right) // require outer
-        : Maneuver.left; // require inner
+    // Command a uniformly random maneuver from the active config's pool. The
+    // entry lane forces nothing: a lane change is the task only when the dice
+    // don't match the lane you came in on — fair, and how often it happens varies
+    // by config. The player paths are maneuver-independent (both lanes straight;
+    // the turn is chosen at the box with the wheel), so nothing to rebuild here.
+    final pool = _config.commandable().toList(growable: false);
+    _maneuver = pool[_rng.nextInt(pool.length)];
   }
 
   // ---------------------------------------------------------------------------
@@ -582,10 +761,30 @@ class IntersectionLightTile extends TileBase {
     double dt,
     PlayerCar playerCar,
     List<NpcCar> allNpcs,
-    List<Pedestrian> pedestrians,
-  ) {
+    List<Pedestrian> pedestrians, {
+    bool gradePlayer = true,
+  }) {
     super.updateNpcSensors(dt, playerCar, allNpcs, pedestrians);
     if (kDebugMode && DebugState.showDebug) _debugPeds = pedestrians;
+
+    // --- NPC GOVERNANCE (runs for trailing tiles too) -----------------------
+    // A pedestrian probe per NPC along its own spline, folded into the signal
+    // apply. This MUST keep running once the player has driven past the junction
+    // (trailing): the cross-traffic is deliberately kept driving, so without
+    // governance it would cruise on the brain's default right-of-way straight
+    // through pedestrians and stopped cars (the "ghost" bug).
+    final pedStopById = <Object, double?>{
+      for (final npc in npcs)
+        if (npc.spline != null)
+          npc: _pedStopOnPath(npc.spline!, npc.distanceTravelled, pedestrians),
+    };
+    _applySignalToNpcs(pedStopById, allNpcs, playerCar);
+
+    // --- PLAYER GRADING (active tile only) ----------------------------------
+    // Everything below judges the player or tracks its exit. Skip it on a tile
+    // the player has left, or a passed junction would fault a far-away player
+    // and re-place downstream tiles off a stale exit.
+    if (!gradePlayer) return;
 
     // Track the committed exit from the branch the player is on. With the discrete
     // fork node the player only becomes a branch ONCE — when they cross the box
@@ -597,19 +796,12 @@ class IntersectionLightTile extends TileBase {
       exitChanged = true;
     }
 
-    // One pedestrian probe per vehicle, along its own movement spline.
     final playerSpline = playerCar.spline;
     final playerPedStop = playerSpline != null
         ? _pedStopOnPath(playerSpline, playerCar.distanceTravelled, pedestrians)
         : null;
-    final pedStopById = <Object, double?>{
-      for (final npc in npcs)
-        if (npc.spline != null)
-          npc: _pedStopOnPath(npc.spline!, npc.distanceTravelled, pedestrians),
-    };
     _pedBlockingPlayer = playerPedStop != null;
 
-    _applySignalToNpcs(pedStopById, allNpcs, playerCar);
     _signalPlayerWait(playerCar);
     _updateReactionSuppression(playerCar);
     _checkPlayerApproach(playerCar); // red-light + safe-clear
@@ -637,8 +829,12 @@ class IntersectionLightTile extends TileBase {
       final localPos = worldToLocal(npc.position);
       final z = _zoneOf(heading, localPos);
       final pedStop = pedStopById[npc];
-
-      if (z != _Zone.approaching) {
+      final isLeft = _isLeftTurnNpc(npc, heading);
+      // In-box LEFT-turners stay under the yield logic below — they pull in and wait
+      // at the BEND (arc-start, inside the box) yielding to oncoming, so they must
+      // NOT get the blanket in-box right-of-way that through/right traffic gets. A
+      // left-turner that has already cleared (z == past) drops through to ROW too.
+      if (z != _Zone.approaching && !(isLeft && z == _Zone.inBox)) {
         npc.brain.intersectionRuleActive = false;
         npc.brain.hasRightOfWay = true;
         npc.brain.stopTargetDistance = pedStop;
@@ -651,7 +847,30 @@ class IntersectionLightTile extends TileBase {
 
       final green = _phaseOf(heading) == SignalPhase.green;
       final gap = _gapToStopLine(heading, localPos);
-      final committed = green || gap <= 0;
+      // A left-turner yields from the BEND: it pulls INTO the junction and waits
+      // nosed into the curve (the arc apex), yielding to straight traffic, then
+      // crosses when clear — like real life, NOT back at the stop line and NOT
+      // stopped straight before the curve. `gapToBend` is the remaining ARC-LENGTH
+      // to that point (it's mid-curve, so a straight-line gap won't do). Through and
+      // right cars just use the line gap.
+      final gapToBend =
+          isLeft ? (_npcLeftBendDist[heading]! - npc.distanceTravelled) : gap;
+      // Is oncoming-through actually blocking (green or not)? Keying on this rather
+      // than `green` makes phase-end fall out for free: at yellow→red the oncoming
+      // brakes, this lifts, and the waiting turner completes during all-red.
+      final oncomingBlocks = isLeft &&
+          gapToBend > 0 &&
+          _oncomingThroughBlocks(heading, npc, allNpcs, playerCar);
+      // No opposing-left stagger: NPC lefts are offered only on non-opposing
+      // approaches ([npcLanes]), so two box-crossing lefts are never live at once.
+      // A left-turner's only hold is the BEND yield to oncoming-through.
+      final committed = isLeft
+          ? npcLeftCommits(
+              green: green,
+              gapToLine: gap,
+              gapToBend: gapToBend,
+              oncomingBlocks: oncomingBlocks)
+          : (green || gap <= 0);
       final boxBlocked = green &&
           gap > 0 &&
           cannotClearBox(_gapToBoxFarEdge(heading, localPos),
@@ -660,8 +879,15 @@ class IntersectionLightTile extends TileBase {
       npc.brain.intersectionRuleActive = !goNow;
       npc.brain.hasRightOfWay = goNow;
       npc.brain.stopTargetDistance = _nearerStop(
-          signalStopTarget(green, gap, pedStop), boxBlocked ? gap : null);
-      npc.brain.speedCap = null;
+          _nearerStop(signalStopTarget(green, gap, pedStop),
+              boxBlocked ? gap : null),
+          oncomingBlocks ? gapToBend : null); // yielding turner holds at the bend
+      // Gentleness: a left-turner eases to its wait at a COMFORTABLE decel (110),
+      // starting early — it rolls up to the bend instead of braking like a race car.
+      // Yielding → ease to a halt at the bend; clear → pace to turn speed so the turn
+      // still flows. The hard stopTargetDistance stays as the overshoot backstop.
+      npc.brain.speedCap =
+          isLeft ? leftTurnApproachCap(gapToBend, yielding: oncomingBlocks) : null;
     }
   }
 
@@ -671,6 +897,24 @@ class IntersectionLightTile extends TileBase {
   @visibleForTesting
   static double? signalStopTarget(bool green, double gapToLine, double? pedStop) =>
       _nearerStop((green || gapToLine <= 0) ? null : gapToLine, pedStop);
+
+  /// Comfort-decel speed cap for a left-turner approaching its wait point, so it
+  /// eases in gently instead of braking hard at the last moment. [yielding] → ease
+  /// all the way to a halt at [gapToStop] (the bend, or the line when waiting for an
+  /// opposing left); otherwise pace down toward (and floor at) turn speed so a clear
+  /// turn keeps flowing. Same setback as `NpcBrain._applyStopTarget` so the gentle
+  /// halt lands where the hard backstop would. Pure → unit-tested.
+  @visibleForTesting
+  static double leftTurnApproachCap(double gapToStop, {required bool yielding}) {
+    final brakeDist = gapToStop - kCarLength * 0.5 - kStopLineSetback;
+    if (yielding) {
+      return brakeDist <= 1.0
+          ? 0.0
+          : math.sqrt(2 * kComfortBrakeDecel * brakeDist);
+    }
+    return math.sqrt(kNpcTurnSpeed * kNpcTurnSpeed +
+        2 * kComfortBrakeDecel * math.max(0.0, brakeDist));
+  }
 
   // ---------------------------------------------------------------------------
   // Player wait / road-block exemption.
@@ -743,7 +987,7 @@ class IntersectionLightTile extends TileBase {
       if (z != _Zone.approaching && z != _Zone.inBox) continue;
       final gap = _oncomingGapToPlayer(npc, playerCar);
       if (gap == null) continue;
-      if (!leftTurnCutsOffOncoming(npc.speed, gap)) continue;
+      if (!leftTurnFailsToYield(npc.speed, gap)) continue;
 
       _yieldViolationFired = true;
       GameBus.instance.emit(YieldViolationEvent(speedAtLine: playerCar.speed));
@@ -769,6 +1013,22 @@ class IntersectionLightTile extends TileBase {
   static bool leftTurnCutsOffOncoming(double oncomingSpeed, double gapToPlayer) {
     if (oncomingSpeed < kReactMinSpeed) return false;
     return DriverReactionDetector.isForcedHardBrake(oncomingSpeed, gapToPlayer);
+  }
+
+  /// Pure: did a left turn fail to yield to this oncoming-through car? Two ways,
+  /// OR'd: (a) a FAST oncoming forced into a hard brake ([leftTurnCutsOffOncoming]);
+  /// (b) a clear CUT-OFF — the player took the crossing within a car-length-ish of
+  /// an oncoming car that is still MOVING. (b) is what (a) misses when the oncoming
+  /// is crawling (e.g. stuck behind an opposing left-turner): its speed/braking is
+  /// contaminated by the queue, so the signal is the player's *position* in front of
+  /// it, not how hard it braked. A STOPPED car (`speed ≤ kStopSpeedThreshold`) is
+  /// never "cut off" — that carve-out keeps a legal turn in front of halted traffic
+  /// clean; a FAR car never lands the player a car-length ahead. Static + pure.
+  @visibleForTesting
+  static bool leftTurnFailsToYield(double oncomingSpeed, double gapToPlayer) {
+    if (oncomingSpeed <= kStopSpeedThreshold) return false; // not going → not cut off
+    if (leftTurnCutsOffOncoming(oncomingSpeed, gapToPlayer)) return true; // fast: forced brake
+    return gapToPlayer < kCarLength * 1.5; // moving + close: took the crossing in front
   }
 
   // ---------------------------------------------------------------------------
@@ -859,6 +1119,16 @@ class IntersectionLightTile extends TileBase {
   bool _gateCrossed = false;
   bool _clearedReported = false;
 
+  // Signal-judgment state (reset each approach).
+  bool _stoppedInApproach = false; // came to a full stop before the gate
+  bool _couldStopAtYellow = false; // snapshot at the yellow rising edge
+  bool _stopLineFaultFired = false;
+  SignalPhase? _prevPlayerPhase; // for yellow rising-edge detection
+
+  /// How far the nose must be past the stop line (over the line / into the
+  /// crosswalk) before a stopped car on red earns the stop-line fault.
+  static const double _stopLineNoseMargin = 6.0;
+
   double get _gateLineY => _cy + _half; // box near edge on the south approach
 
   bool _playerExitedBox(Vector2 local) {
@@ -879,31 +1149,199 @@ class IntersectionLightTile extends TileBase {
       _gateCrossed = false;
       _clearedReported = false;
       _committedExit = Maneuver.straight;
+      _stoppedInApproach = false;
+      _couldStopAtYellow = false;
+      _stopLineFaultFired = false;
+      _prevPlayerPhase = null;
       return;
     }
 
     if (_playerExitedBox(local)) {
       if (!_clearedReported) {
         _clearedReported = true;
-        scenario.onSafelyCleared();
-        if (scenario.result.status == ScenarioStatus.passed) {
-          GameBus.instance.emit(RulePassedEvent());
+        // Grade lane discipline from the exit spline the player committed to
+        // (synchronous). A fault withholds the pass; the emitted event fails and
+        // records the run on the next tick (the bus is async, so we can't call
+        // onSafelyCleared this frame and still let the fault win).
+        if (!_gradeLaneDiscipline(playerCar)) {
+          scenario.onSafelyCleared();
+          if (scenario.result.status == ScenarioStatus.passed) {
+            GameBus.instance.emit(RulePassedEvent());
+          }
         }
       }
       return;
     }
 
-    // The box near edge is the red-light decision point (the player is about to
-    // enter the junction). The EXIT and the wrong-lane fault are decided later, on
-    // the way OUT, by where the free-steered trajectory leaves the box
-    // (see [_reRailOnExit]).
+    // Signal compliance on the approach. Lane discipline (wrong lane / missed
+    // turn / wrong exit lane) is graded on the way OUT, from the exit spline the
+    // player left on — see [_gradeLaneDiscipline], called above on clear.
+    _checkSignalJudgment(playerCar, localY);
+  }
+
+  /// Yellow dilemma, stop-line discipline, and the red / right-on-red gate
+  /// verdict — the signal-compliance grading. Thin glue over the pure
+  /// [signalGateVerdict] / [couldStopForYellow].
+  void _checkSignalJudgment(PlayerCar playerCar, double localY) {
+    final phase = _phaseOf(_Heading.north);
+    final fwd = Vector2(math.cos(playerCar.angle), math.sin(playerCar.angle));
+    final noseLocal = worldToLocal(playerCar.position + fwd * (kCarLength / 2));
+    final noseGap = _gapToStopLine(_Heading.north, noseLocal);
+
+    // A full stop anywhere on the approach (for the right-on-red "stopped first").
+    if (playerCar.speed <= kStopSpeedThreshold) _stoppedInApproach = true;
+
+    // Yellow rising edge → snapshot whether the player could comfortably stop.
+    if (phase == SignalPhase.yellow && _prevPlayerPhase != SignalPhase.yellow) {
+      _couldStopAtYellow = couldStopForYellow(noseGap, playerCar.speed);
+    } else if (phase != SignalPhase.yellow) {
+      _couldStopAtYellow = false; // stale once the light leaves yellow
+    }
+    _prevPlayerPhase = phase;
+
+    // Stop-line discipline: stopped, on red, nose past the line, not yet in the
+    // box (the narrow [stop line, gate] crosswalk zone — distinct from the red
+    // gate fault, which is for crossing INTO the box).
+    if (!_stopLineFaultFired &&
+        phase == SignalPhase.red &&
+        playerCar.speed <= kStopSpeedThreshold &&
+        noseGap < -_stopLineNoseMargin &&
+        localY > _gateLineY) {
+      _stopLineFaultFired = true;
+      GameBus.instance.emit(StopLineViolationEvent());
+    }
+
+    // Gate crossing → red / right-on-red / yellow verdict (once per approach).
     if (!_gateCrossed && localY <= _gateLineY) {
       _gateCrossed = true;
-      if (_phaseOf(_Heading.north) == SignalPhase.red && !_redViolationFired) {
-        _redViolationFired = true;
-        GameBus.instance.emit(RedLightViolationEvent());
+      switch (signalGateVerdict(
+        phase: phase,
+        commanded: _maneuver,
+        stoppedFirst: _stoppedInApproach,
+        couldStopAtYellow: _couldStopAtYellow,
+      )) {
+        case SignalGateFault.ranRed:
+          if (!_redViolationFired) {
+            _redViolationFired = true;
+            GameBus.instance.emit(RedLightViolationEvent());
+          }
+        case SignalGateFault.ranYellow:
+          GameBus.instance.emit(YellowRunEvent());
+        case null:
+          // Green gate: gunning it while a late straggler is still clearing the
+          // box (cross traffic that didn't make the all-red) is a fault.
+          if (phase == SignalPhase.green && _crossTrafficInBox()) {
+            GameBus.instance.emit(GunGreenEvent());
+          }
       }
     }
+  }
+
+  /// Cross traffic (an E/W NPC) still occupying the box — for catching a green
+  /// gunned before a late straggler has finished clearing the junction.
+  bool _crossTrafficInBox() => npcs.any((n) {
+        if (n.laneIndex < 0 ||
+            n.laneIndex >= npcLanes.length ||
+            n.spline == null) {
+          return false;
+        }
+        final h = _headingOfLane(n.laneIndex);
+        if (h != _Heading.east && h != _Heading.west) return false;
+        return _zoneOf(h, worldToLocal(n.position)) == _Zone.inBox;
+      });
+
+  /// Pure: which gate fault crossing the box against [phase] earns (null =
+  /// clean). Green is clean; a right-on-red is legal AFTER a full stop
+  /// ([stoppedFirst]); anything else on red runs it; a yellow you could have
+  /// stopped for ([couldStopAtYellow]) is the dilemma-zone fault. Static + pure.
+  /// (v1: right-on-red requires only the stop, not yet yielding to cross/peds.)
+  @visibleForTesting
+  static SignalGateFault? signalGateVerdict({
+    required SignalPhase phase,
+    required Maneuver commanded,
+    required bool stoppedFirst,
+    required bool couldStopAtYellow,
+  }) {
+    switch (phase) {
+      case SignalPhase.green:
+        return null;
+      case SignalPhase.yellow:
+        return couldStopAtYellow ? SignalGateFault.ranYellow : null;
+      case SignalPhase.red:
+        // A right-on-red is legal after a full stop; anything else runs the red.
+        if (commanded == Maneuver.right && stoppedFirst) return null;
+        return SignalGateFault.ranRed;
+    }
+  }
+
+  /// Pure: at yellow onset, could the player stop COMFORTABLY before the line —
+  /// reaction creep + v²/2a at a gentle decel ([kComfortBrakeDecel]). If so,
+  /// proceeding through is the dilemma-zone fault. Static + pure → unit-tested.
+  @visibleForTesting
+  static bool couldStopForYellow(double gapToLine, double speed) {
+    if (gapToLine <= 0) return false; // already at/over the line — commit
+    final stopDist = speed * kYellowReactionSeconds +
+        (speed * speed) / (2 * kComfortBrakeDecel);
+    return gapToLine >= stopDist;
+  }
+
+  /// Grades lane discipline at box clear, reading the exit spline the player
+  /// committed to. The approach lane is implied by that spline (left branches
+  /// hang only off the inner spine, right only off the outer; a through spine
+  /// keeps its lane), so an in-box correction — allowed — is judged by where the
+  /// player actually left from. Emits at most one fault and returns whether one
+  /// fired (so the caller withholds the pass). The three are mutually exclusive
+  /// and ordered: wrong LANE → wrong MANEUVER (right lane, didn't follow it) →
+  /// wrong EXIT lane (right move, far lane instead of nearest).
+  bool _gradeLaneDiscipline(PlayerCar playerCar) {
+    final s = playerCar.spline;
+    final did = _exitManeuver(s);
+    if (did == null) return false; // not on one of our splines (handed off)
+    final inner = identical(s, _innerThrough) ||
+        identical(s, _nearLeft) ||
+        identical(s, _farLeft);
+    final farExit = identical(s, _farLeft) || identical(s, _farRight);
+
+    switch (laneVerdict(
+        config: _config,
+        inner: inner,
+        did: did,
+        commanded: _maneuver,
+        farExit: farExit)) {
+      case LaneFault.missedTurn:
+        GameBus.instance.emit(MissedTurnEvent());
+      case LaneFault.wrongLane:
+        GameBus.instance.emit(WrongLaneEvent());
+      case LaneFault.wrongExitLane:
+        GameBus.instance.emit(WrongExitLaneEvent());
+      case null:
+        return false;
+    }
+    return true;
+  }
+
+  /// Pure lane-discipline verdict from the exit facts, against the active
+  /// [config]: the lane the player left from ([inner]?), the maneuver they
+  /// actually [did], the [commanded] one, and whether they took the far exit
+  /// lane ([farExit]). Null = clean. Ordered and mutually exclusive (see
+  /// [LaneFault]). Static + pure → unit-tested.
+  @visibleForTesting
+  static LaneFault? laneVerdict({
+    required LaneConfig config,
+    required bool inner,
+    required Maneuver did,
+    required Maneuver commanded,
+    required bool farExit,
+  }) {
+    // Missing the turn (ending up somewhere other than the instruction) is the
+    // headline error — reported ahead of any lane fault, so "skipped the task and
+    // went elsewhere" reads as a missed turn, not a lane technicality. A wrong
+    // lane is then only a RIGHT move done from the wrong lane (e.g. straight from
+    // a turn-only lane).
+    if (did != commanded) return LaneFault.missedTurn;
+    if (!config.allows(isInner: inner, m: commanded)) return LaneFault.wrongLane;
+    if (farExit) return LaneFault.wrongExitLane;
+    return null;
   }
 
 
@@ -912,6 +1350,17 @@ class IntersectionLightTile extends TileBase {
   // ---------------------------------------------------------------------------
   static const double _zebraEnterMargin = 12.0;
   static const double _zebraBandMargin = _crosswalkHalf + 8.0;
+
+  /// US "half-rule" DANGER ZONE: how close (laterally along the crossing) a ped
+  /// must be to a vehicle's path before the vehicle yields to one merely walking
+  /// TOWARD it. ~your-half-plus-a-lane (1.5 lanes). A ped still well over on the
+  /// FAR half of the wide 2-lane crossing is beyond this, so you don't sit there
+  /// for someone two lanes away — an examiner doesn't expect it (you yield to a
+  /// ped in your half, or one close enough to your half to be in danger). A ped
+  /// right at the path still stops you regardless of direction (the
+  /// [kPedYieldLateral] term). One knob: lower it to pass closer. The 1-lane tile
+  /// is its own file and unchanged — its narrow crossing is all within a lane.
+  static const double _pedDangerZone = kLaneWidth * 1.5; // 120
 
   int _zebraIndexOf(Vector2 p) {
     final dx = p.x - _cx, dy = p.y - _cy;
@@ -928,10 +1377,31 @@ class IntersectionLightTile extends TileBase {
 
   bool _pedOnZebra(Vector2 p) => _zebraIndexOf(p) >= 0;
 
+  /// Test seam: which crossing band a tile-local point falls in (−1 = none).
+  /// Lets a test prove perpendicular crossings' bands don't overlap at the box
+  /// corners (the false-attribution bug that false-tripped yields/faults).
+  @visibleForTesting
+  int zebraBandAt(Vector2 localPoint) => _zebraIndexOf(localPoint);
+
+  /// Test seam: the pedestrian stop distance along [sp] (null = clear). Lets a
+  /// test check the half-rule danger zone — a ped on the far half doesn't stop you.
+  @visibleForTesting
+  double? pedStopAlong(Spline sp, double travelled, List<Pedestrian> peds) =>
+      _pedStopOnPath(sp, travelled, peds);
+
   double? _pedStopOnPath(Spline sp, double travelled, List<Pedestrian> pedestrians) {
     if (pedestrians.isEmpty) return null;
     final total = sp.totalLength;
     if (total <= 0) return null;
+    // Matching a ped's band to the path's band (below) is only unambiguous while
+    // no two perpendicular crossings' detection bands overlap — i.e. a band's
+    // near edge clears the box-corner span. Otherwise a corner-stroller is
+    // mis-attributed to the cross-street's crossing and false-trips this stop /
+    // the player's give-way fault. See [_crosswalkOffset].
+    assert(
+        _crosswalkOffset - _zebraBandMargin > _half + _zebraEnterMargin,
+        "crosswalk offset too small: perpendicular crossings' bands overlap at "
+        'the box corners — corner-strollers false-trip yields/faults.');
 
     final zebraPeds = <({Vector2 pos, Vector2 fwd, int band})>[];
     for (final ped in pedestrians) {
@@ -966,7 +1436,12 @@ class IntersectionLightTile extends TileBase {
       bandEntry ??= d;
       for (final p in zebraPeds) {
         if (p.band != ptBand) continue;
-        if (p.pos.distanceTo(pt) <= conflict || (pt - p.pos).dot(p.fwd) > 0) {
+        // Half-rule: stop for a ped right at the path ([conflict], any direction),
+        // or one within the [_pedDangerZone] walking TOWARD it. A ped still well
+        // over on the far half is beyond the zone → don't wait for it.
+        final lateral = p.pos.distanceTo(pt);
+        if (lateral <= conflict ||
+            (lateral <= _pedDangerZone && (pt - p.pos).dot(p.fwd) > 0)) {
           return bandEntry;
         }
       }
@@ -1031,6 +1506,10 @@ class IntersectionLightTile extends TileBase {
       if (ped.startledByPlayer) return ped;
       if (!_playerOnBand(playerCar, idx)) continue;
       final toPlayer = playerCar.position - ped.position;
+      // Same half-rule danger zone as the stop: you only "cut off" a ped you
+      // passed CLOSE to (within [_pedDangerZone]) — not one two lanes away on the
+      // far half. Without this, relaxing the stop would fault you for legally going.
+      if (toPlayer.length > _pedDangerZone) continue;
       final pedFwd = Vector2(math.cos(ped.angle), math.sin(ped.angle));
       if (pedFwd.dot(toPlayer) > 0) return ped;
     }
@@ -1089,7 +1568,8 @@ class IntersectionLightTile extends TileBase {
     _drawLaneArrows(canvas);
     _drawCrosswalks(canvas);
     drawDecorations(canvas);
-    _drawSignalHeads(canvas);
+    // Signal heads hang over each lane and are painted by SignalHeadOverlay
+    // (renderSignalHeadsOverlay), above the car layer.
     debugRenderSplines(canvas);
     if (kDebugMode && DebugState.showDebug) _drawZebraDebug(canvas);
   }
@@ -1225,7 +1705,10 @@ class IntersectionLightTile extends TileBase {
 
   void _drawApproachArrows(Canvas canvas, Offset travel) {
     final angle = math.atan2(travel.dx, -travel.dy);
-    final back = _half + _stopLineGap + 70.0;
+    // Set ~100px further back than the stop line (was +70) so the lane arrows
+    // read early on approach and clear the overhead heads/placards rather than
+    // tucking under them. Still well inside the shortest (E/W) approach.
+    final back = _half + _stopLineGap + 170.0;
     final centre = const Offset(_cx, _cy) - travel * back;
     final paint = Paint()
       ..color = const Color(0xFFFFFFFF)
@@ -1238,8 +1721,8 @@ class IntersectionLightTile extends TileBase {
     // [centre] is on the road centreline; after rotation "up" (−y local) is the
     // travel direction and +x local is the right (driving) side. The two approach
     // lanes sit at +innerOff (inner, left-only ◄) and +outerOff (outer, ▲►).
-    _arrowGlyph(canvas, paint, dx: _innerOff, kinds: const ['left']);
-    _arrowGlyph(canvas, paint, dx: _outerOff, kinds: const ['up', 'right']);
+    _arrowGlyph(canvas, paint, dx: _innerOff, kinds: _config.arrowKinds(isInner: true));
+    _arrowGlyph(canvas, paint, dx: _outerOff, kinds: _config.arrowKinds(isInner: false));
     canvas.restore();
   }
 
@@ -1269,8 +1752,8 @@ class IntersectionLightTile extends TileBase {
     }
   }
 
-  void _head(Path path, double x, double y, double dirX, double dirY) {
-    const s = 9.0;
+  void _head(Path path, double x, double y, double dirX, double dirY,
+      [double s = 9.0]) {
     final px = -dirY, py = dirX; // perpendicular
     path
       ..moveTo(x - dirX * s + px * s, y - dirY * s + py * s)
@@ -1310,6 +1793,16 @@ class IntersectionLightTile extends TileBase {
 
   static const double _lampR = 8.0;
 
+  /// Head scale — a hair smaller than full so a car waiting under the overhead
+  /// head still reads through on either side (head ≈17 wide over an 80 lane).
+  static const double _headScale = 1 / 1.5;
+
+  /// Painted above the car layer by SignalHeadOverlay. One mast arm per
+  /// approach: a curb pole, an arm over the carriageway, and a head hung above
+  /// EACH of the two approaching lanes — footpath clear, a head over every lane.
+  @override
+  void renderSignalHeadsOverlay(Canvas canvas) => _drawSignalHeads(canvas);
+
   void _drawSignalHeads(Canvas canvas) {
     _drawSignalHeadFor(canvas, const Offset(0, -1), _phaseOf(_Heading.north));
     _drawSignalHeadFor(canvas, const Offset(0, 1), _phaseOf(_Heading.south));
@@ -1320,12 +1813,89 @@ class IntersectionLightTile extends TileBase {
   void _drawSignalHeadFor(Canvas canvas, Offset travel, SignalPhase phase) {
     final right = Offset(-travel.dy, travel.dx);
     final back = _half + _stopLineGap + 30.0;
-    const outward = _half + 16.0;
-    final center = const Offset(_cx, _cy) - travel * back + right * outward;
+    final base = const Offset(_cx, _cy) - travel * back;
     final angle = math.atan2(travel.dx, -travel.dy);
+
+    // Pole on the curb edge; arm spans in over both lanes to the inner head.
+    final pole = base + right * (_half + 6.0);
+    canvas.drawLine(
+        pole,
+        base + right * _innerOff,
+        Paint()
+          ..color = const Color(0xFF4A4D52)
+          ..strokeWidth = 5
+          ..strokeCap = StrokeCap.round);
+    canvas.drawCircle(pole, 6, Paint()..color = const Color(0xFF2A2D32));
+
+    for (final off in const [_innerOff, _outerOff]) {
+      _drawHead(canvas, base + right * off, angle, phase);
+    }
+
+    // US-style overhead lane-use placards on the player's approach (north in
+    // tile space) — an always-visible duplicate of the painted lane arrows,
+    // which a car parked on them hides. Each placard advertises the active
+    // config's rule for its lane; it sits just curb-side of its head.
+    if (travel == const Offset(0, -1)) {
+      _drawLaneUseSign(canvas, base + right * (_innerOff + _signGap), angle,
+          _config.arrowKinds(isInner: true));
+      _drawLaneUseSign(canvas, base + right * (_outerOff + _signGap), angle,
+          _config.arrowKinds(isInner: false));
+    }
+  }
+
+  static const double _signGap = 25.0; // placard offset, curb-side of the head
+
+  /// US-style lane-use placard hung by a head: a white panel with black
+  /// arrow(s) for the movements that lane allows ([kinds] mirrors the painted
+  /// [_arrowGlyph]). Drawn in the overlay, so it stays visible above the cars.
+  void _drawLaneUseSign(
+      Canvas canvas, Offset center, double angle, List<String> kinds) {
     canvas.save();
     canvas.translate(center.dx, center.dy);
     canvas.rotate(angle);
+    const hw = 14.0, hh = 15.0;
+    final panel = RRect.fromRectAndRadius(
+        const Rect.fromLTRB(-hw, -hh, hw, hh), const Radius.circular(3));
+    canvas.drawRRect(panel, Paint()..color = const Color(0xFFF5F5F5));
+    canvas.drawRRect(
+        panel,
+        Paint()
+          ..color = const Color(0xFF202225)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 2);
+    final ink = Paint()
+      ..color = const Color(0xFF202225)
+      ..strokeWidth = 3
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+    for (final k in kinds) {
+      final path = Path()..moveTo(0, 10); // stem foot, toward the driver
+      switch (k) {
+        case 'up':
+          path.lineTo(0, -9);
+          _head(path, 0, -9, 0, -1, 5);
+        case 'left':
+          path
+            ..lineTo(0, -1)
+            ..lineTo(-9, -1);
+          _head(path, -9, -1, -1, 0, 5);
+        case 'right':
+          path
+            ..lineTo(0, -1)
+            ..lineTo(9, -1);
+          _head(path, 9, -1, 1, 0, 5);
+      }
+      canvas.drawPath(path, ink);
+    }
+    canvas.restore();
+  }
+
+  void _drawHead(Canvas canvas, Offset center, double angle, SignalPhase phase) {
+    canvas.save();
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(angle);
+    canvas.scale(_headScale);
     final housing = RRect.fromRectAndRadius(
         const Rect.fromLTRB(-13, -30, 13, 30), const Radius.circular(6));
     canvas.drawRRect(housing, Paint()..color = const Color(0xFF202225));
