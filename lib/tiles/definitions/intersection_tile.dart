@@ -221,9 +221,9 @@ class IntersectionTile extends TileBase {
   /// side of the pavement (from the pavement centre) so the crossing sits clear
   /// of the box (urban; interurban stays at the pavement centre, 100).
   double get _crosswalkOffset =>
-      _halfBox + kPavementWidth * 0.5 + _crosswalkShift; // 138 urban / 100 rural
-  double get _swLo => _cx - _crosswalkOffset; // 462 urban / 500 rural
-  double get _swHi => _cx + _crosswalkOffset; // 738 urban / 700 rural
+      _halfBox + kPavementWidth * 0.5 + _crosswalkShift; // 148 urban / 110 rural
+  double get _swLo => _cx - _crosswalkOffset; // 452 urban / 490 rural
+  double get _swHi => _cx + _crosswalkOffset; // 748 urban / 710 rural
 
   static List<Vector2> _hLine(double y) => [
         Vector2(0, y),

@@ -8,8 +8,16 @@ const double kLaneWidth = 80.0;
 /// Road total width (1 lane each direction).
 const double kRoadWidth = kLaneWidth * 2;
 
-/// Pavement width on each side of the road.
-const double kPavementWidth = 40.0;
+/// Pavement width on each side of the road. Wide enough for two keep-right
+/// pedestrian streams to pass clear of the kerb (the road-side stream rides
+/// centreline − [kPedLaneOffset]); drives the sidewalk centrelines, the building
+/// setback, and the intersection crosswalk offset, so they all scale together.
+const double kPavementWidth = 60.0;
+
+/// Extra gap (world units) between the pavement's outer edge and the building
+/// frontage — how far buildings sit BACK from the road beyond the pavement
+/// itself. See [EnvironmentDecorator] setback.
+const double kBuildingSetbackGap = 18.0;
 
 // ---------------------------------------------------------------------------
 // Car dimensions (logical units)
@@ -182,11 +190,29 @@ const double kPedDontStartWindow = 2.5;
 /// route's centreline. Two pedestrians meeting head-on on a shared centreline
 /// each keep to their own right, so they slide to OPPOSITE sides (2× this = 24
 /// apart) and pass with a clear gap — comfortably more than the ~16u figure
-/// width, so shoulders don't visibly clip. Two of these lanes plus the figure
-/// just fill the 40u pavement (a ped centred here spans to the curb edge), and
-/// it sits well inside the ±26u zebra detection band (a crossing ped still reads
-/// as on its zebra for the rules).
+/// width, so shoulders don't visibly clip. On the [kPavementWidth] pavement both
+/// lanes sit clear of the kerb and the building line: the road-side stream rides
+/// centreline − this, its outer shoulder still ~10u off the kerb. It also sits
+/// well inside the ±26u zebra detection band (a crossing ped still reads as on
+/// its zebra for the rules).
 const double kPedLaneOffset = 12.0;
+/// Building-exit route shaping (see [TileBase] `_buildExitRoutes`). A pedestrian
+/// leaving a building steps onto the sidewalk as a DIAGONAL merge — out toward
+/// the walk line AND forward along it — rather than a perpendicular T. The
+/// perpendicular step made a ~90° corner whose centripetal rounding cut to the
+/// inside (the ROAD side), so the walker swerved toward the road leaving the
+/// door (it even started facing backward). Merging forward removes that; a
+/// settle point [kPedExitSettle] further along pins the path onto the line so it
+/// can't dip toward the road. Geometry only — speed stays arc-length-uniform.
+///
+/// The forward step is the door's LATERAL offset (its perpendicular distance to
+/// the walk line) × this ratio, so the diagonal keeps a fixed shallow angle no
+/// matter how wide the pavement or how far back the buildings sit — a steeper
+/// step would re-create the roadward corner-cut. (Tuned so a wider pavement /
+/// deeper setback can't silently regress the swerve; the building-exit test is
+/// the guard.)
+const double kPedExitMergeRatio = 1.7;
+const double kPedExitSettle = 26.0;
 /// Avoidance side-step (world units) a walker leans to clear a CROSSING or
 /// near-oncoming walker (a converging corner). A same-direction OVERTAKE doesn't
 /// use this — the faster walker swaps to the open opposite lane (2×[kPedLaneOffset])

@@ -52,8 +52,9 @@ class EnvironmentDecorator {
   /// Average ground area (sq units) per tree (interurban scatter). Smaller → denser.
   static const double _treeAreaPer = 90000.0;
   /// Building inner-face setback from the sidewalk centreline: clears the
-  /// pavement (half its width) plus a small gap, so the block sits on the grass.
-  static const double _setback = kPavementWidth / 2 + 6;
+  /// pavement (half its width) plus [kBuildingSetbackGap], so the block sits back
+  /// on the grass rather than right at the kerb.
+  static const double _setback = kPavementWidth / 2 + kBuildingSetbackGap;
 
   void _build(Random rng) {
     if (locale == LocaleType.urban) {

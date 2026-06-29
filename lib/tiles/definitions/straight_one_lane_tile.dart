@@ -76,10 +76,10 @@ class StraightOneLaneTile extends TileBase {
   @override
   Vector2 get exitAnchor => Vector2(_playerX, 0);
 
-  static const double _roadOuterLeft = _cx - kRoadWidth / 2 - kPavementWidth; // 480
-  static const double _roadOuterRight = _cx + kRoadWidth / 2 + kPavementWidth; // 720
-  static const double _walkLeftX = _cx - kRoadWidth / 2 - kPavementWidth * 0.5; // 500
-  static const double _walkRightX = _cx + kRoadWidth / 2 + kPavementWidth * 0.5; // 700
+  static const double _roadOuterLeft = _cx - kRoadWidth / 2 - kPavementWidth; // 460
+  static const double _roadOuterRight = _cx + kRoadWidth / 2 + kPavementWidth; // 740
+  static const double _walkLeftX = _cx - kRoadWidth / 2 - kPavementWidth * 0.5; // 490
+  static const double _walkRightX = _cx + kRoadWidth / 2 + kPavementWidth * 0.5; // 710
 
   @override
   List<Rect> get decorationZones => const [

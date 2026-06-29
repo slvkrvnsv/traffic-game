@@ -338,11 +338,39 @@ abstract class TileBase extends PositionComponent {
       final far = e0.distanceToSquared(join) >= e1.distanceToSquared(join)
           ? e0
           : e1;
-      final mid = (join + far) * 0.5;
-      routes.add(PedSpawnRoute(
-        Spline([door, join, mid, far]),
-        crossesRoad: bestCrosses,
-      ));
+      final Spline path;
+      if (bestCrosses) {
+        // A CROSSING is rules-relevant: cars yield to a pedestrian that reads as
+        // ON its zebra (a ±band around this line). Keep the road-entry exactly at
+        // [join] — the zebra mouth at the kerb — by leaving the original shape.
+        // The roadward-swerve the sidewalk reshaping fixes is meaningless for a
+        // path whose whole job is to cross the road, and the diagonal merge would
+        // step the ped onto the carriageway a few units off the zebra line.
+        path = Spline([door, join, (join + far) * 0.5, far]);
+      } else {
+        // SIDEWALK exit: step onto the line as a DIAGONAL merge — out from the
+        // door AND forward along it — then a settle point [kPedExitSettle]
+        // further on, instead of the old perpendicular door→join corner. That
+        // ~90° corner's centripetal rounding cut to its inside (the ROAD side),
+        // so the walker started facing backward and swerved toward the road
+        // leaving the building, ending a step off the kerb. Merging forward kills
+        // the backward hook; the settle pins the path onto the line so it can't
+        // dip roadward. The forward step scales with the door's LATERAL offset
+        // ([kPedExitMergeRatio]) so the diagonal stays the same shallow angle
+        // however wide the pavement / far back the building. Geometry only —
+        // speed stays arc-length-uniform.
+        final toFar = far - join;
+        final lineLen = toFar.length;
+        final dir = lineLen > 1e-6 ? toFar / lineLen : Vector2(0, -1);
+        final offset = door - join;
+        final lateral = (offset - dir * offset.dot(dir)).length; // ⊥ door→line
+        final mergeStep = (lateral * kPedExitMergeRatio).clamp(0.0, lineLen * 0.4);
+        final merge = join + dir * mergeStep;
+        final settle =
+            join + dir * (mergeStep + kPedExitSettle).clamp(0.0, lineLen * 0.6);
+        path = Spline([door, merge, settle, (settle + far) * 0.5, far]);
+      }
+      routes.add(PedSpawnRoute(path, crossesRoad: bestCrosses));
     }
     return routes;
   }

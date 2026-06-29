@@ -114,11 +114,11 @@ class StraightTile extends TileBase {
   Vector2 get exitAnchor => Vector2(_playerInnerX, 0);
 
   // Off-road grass strips outside each pavement — dressed with locale scenery.
-  static const double _roadOuterLeft = _cx - _roadHalfWidth - kPavementWidth; // 400
-  static const double _roadOuterRight = _cx + _roadHalfWidth + kPavementWidth; // 800
+  static const double _roadOuterLeft = _cx - _roadHalfWidth - kPavementWidth; // 380
+  static const double _roadOuterRight = _cx + _roadHalfWidth + kPavementWidth; // 820
   // Sidewalk centrelines (ambient walkers stroll these, never the road).
-  static const double _walkLeftX = _cx - _roadHalfWidth - kPavementWidth * 0.5; // 420
-  static const double _walkRightX = _cx + _roadHalfWidth + kPavementWidth * 0.5; // 780
+  static const double _walkLeftX = _cx - _roadHalfWidth - kPavementWidth * 0.5; // 410
+  static const double _walkRightX = _cx + _roadHalfWidth + kPavementWidth * 0.5; // 790
 
   @override
   List<Rect> get decorationZones => const [

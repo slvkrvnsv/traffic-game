@@ -107,13 +107,16 @@ class StartTile extends TileBase {
   /// Sidewalk runs down both sides and wraps across the closed end.
   void _drawPavement(Canvas canvas) {
     final p = Paint()..color = const Color(0xFFBDBDBD);
-    final left = _cx - kRoadWidth / 2 - kPavementWidth; // 480
+    final left = _cx - kRoadWidth / 2 - kPavementWidth; // 460
     final right = _cx + kRoadWidth / 2; // 680 — right kerb
-    final capBottom = _deadEndY + kPavementWidth; // 1190
+    // Closed-end cap, clamped to the tile so a wider [kPavementWidth] can't
+    // overdraw past the bottom edge (_deadEndY + 60 would spill to 1210).
+    final capBottom = (_deadEndY + kPavementWidth).clamp(0.0, kTileSize); // 1200
     canvas.drawRect(Rect.fromLTWH(left, 0, kPavementWidth, capBottom), p);
     canvas.drawRect(Rect.fromLTWH(right, 0, kPavementWidth, capBottom), p);
     canvas.drawRect(
-      Rect.fromLTWH(left, _deadEndY, right + kPavementWidth - left, kPavementWidth),
+      Rect.fromLTWH(
+          left, _deadEndY, right + kPavementWidth - left, capBottom - _deadEndY),
       p,
     );
   }
