@@ -124,18 +124,30 @@ class DriverReactionDetector extends Component {
     }
     final gap = _playerGapAhead(npc);
     if (gap == null) return false;
-    return isForcedHardBrake(npc.speed, gap);
+    // Closing speed, not the NPC's absolute speed: a player merging in at the
+    // NPC's own pace forces no brake however tight the gap, so it can't fault.
+    return isForcedHardBrake(npc.speed - playerCar.speed, gap);
   }
 
-  /// Pure discriminator: does forcing the NPC to a stop within [gap] (at
-  /// [speed]) demand harder braking than steady following ever needs? Measured
-  /// against the planning distance `brakeDist = gap − kNpcStandingGap`, so
-  /// equilibrium following sits at exactly 1×[kNpcBrakeDecel] and only a genuine
-  /// cut-in / brake-check pushes a_req past the multiplier. Static + pure so the
-  /// correctness boundary can be unit-tested directly.
-  static bool isForcedHardBrake(double speed, double gap) {
+  /// Pure discriminator: does the NPC have to brake harder than its routine firm
+  /// stop to avoid the player ahead? Uses the *closing* speed [closingSpeed] (how
+  /// fast the NPC is overtaking the player), not the NPC's absolute speed — a
+  /// player who merges in at the NPC's own speed forces NO braking (closing ≈ 0),
+  /// however small the gap, which is exactly why tucking a couple of car-lengths
+  /// ahead at matching speed is a normal merge, not a cut-off. Only a slower (or
+  /// braking) player closes the gap, and only fast enough closing onto a tight
+  /// `brakeDist = gap − kNpcStandingGap` pushes a_req past
+  /// [kReactHardBrakeMultiplier]×[kNpcBrakeDecel] (~30% above the NPC's routine
+  /// firm brake). Static + pure so the correctness boundary can be unit-tested.
+  ///
+  /// Deliberate trade-off: a tight cut-in at *matched* speed reads as safe here
+  /// (closing ≈ 0) — correct, no brake was forced; if speeds then diverge even
+  /// slightly the spike reappears, and an actual touch is caught by the collision
+  /// path.
+  static bool isForcedHardBrake(double closingSpeed, double gap) {
+    if (closingSpeed <= 0) return false; // matching / pulling away — no brake forced
     final brakeDist = math.max(gap - kNpcStandingGap, 1.0);
-    final aReq = (speed * speed) / (2 * brakeDist);
+    final aReq = (closingSpeed * closingSpeed) / (2 * brakeDist);
     return aReq > kReactHardBrakeMultiplier * kNpcBrakeDecel;
   }
 

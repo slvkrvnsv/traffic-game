@@ -353,16 +353,18 @@ const double kSteerEnableSeparation = kLaneWidth * 0.1; // 8 — engages early
 // An NPC reacts (red bubble) when the player forces it to brake hard — e.g.
 // cutting in on an overtake. The discriminator vs. ordinary following is the
 // *required* deceleration on a rising edge, measured against the distance the
-// NPC actually plans its braking over: a_req = v² / (2·brakeDist), where
-// brakeDist = gap − kNpcStandingGap. Steady following holds the NPC at
-// v = sqrt(2·kNpcBrakeDecel·brakeDist), so there a_req == kNpcBrakeDecel exactly
-// — independent of speed and distance. a_req only exceeds kNpcBrakeDecel when
-// the gap stepped down faster than the controller could react (a cut-in or
-// brake-check), so the threshold is a multiplier ABOVE 1. Per-NPC cooldown keeps
-// it to one bubble per incident.
+// NPC actually plans its braking over: a_req = closing² / (2·brakeDist), where
+// closing = npc.speed − player.speed and brakeDist = gap − kNpcStandingGap. Using
+// the *closing* speed (not the NPC's absolute speed) is the key: a player who
+// merges in at the NPC's own pace forces NO braking (closing ≈ 0) however small
+// the gap — which is why tucking a couple of car-lengths ahead at matching speed
+// is a normal merge, not a cut-off. Only a slower (or braking) player closes the
+// gap, and a_req only crosses the threshold when that closing is fast onto a
+// tight gap. Per-NPC cooldown keeps it to one bubble per incident.
 /// Multiple of [kNpcBrakeDecel] the required decel must exceed to count as a
-/// forced hard brake. Must be > 1 (steady following sits exactly at 1×); the
-/// headroom also absorbs per-frame braking jitter.
+/// forced hard brake. With closing speed, matched-speed following sits at 0× and
+/// a routine firm stop at 1×; a cut-off is one that demands ~30% harder braking
+/// than that routine stop. The headroom also absorbs per-frame braking jitter.
 const double kReactHardBrakeMultiplier = 1.3;
 /// NPC must be moving at least this fast to react — skips stop-and-go, where a
 /// tiny gap spikes a_req harmlessly.

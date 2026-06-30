@@ -248,17 +248,22 @@ class LaneTransitionTile extends TileBase {
   // through lane they have priority and nothing is tested ("just go").
   // ---------------------------------------------------------------------------
 
-  /// The merge-yield gives way to a surviving-lane car unless that car is already
-  /// THIS far BEHIND us (tile-local Y) — then we've won the zipper and drive on.
-  /// MUST stay equal to [TileBase._gapAhead]'s lead-detection cone threshold
-  /// (`kCarLength * 0.5`): the merging car stops yielding to a surviving car at
-  /// exactly the point that car starts seeing the merging car as a lead and brakes
-  /// for it. Aligned, responsibility hands off cleanly — no gap where the merging
-  /// car yields to a car BEHIND it while that car simultaneously brakes for it (a
-  /// mutual stall that froze the merging car in the taper, blinker on, FOREVER —
-  /// the reported "stuck on the merge spot" bug), and no band where both yield. The
-  /// old full `kCarLength` left exactly that 26u deadlock band.
-  static const double _mergeLeadMargin = kCarLength * 0.5;
+  /// How far AHEAD of the nearest through-lane car the merging car must clearly
+  /// lead (tile-local Y) before it claims the spot and drives on. Below this it
+  /// gives way — tucks in / drops back behind through traffic. The ENDING lane
+  /// yields; the through lane never does. A full safe gap ([kNpcSafeGapDistance])
+  /// keeps the merge deferential: it takes the lane only when it plainly leads,
+  /// instead of barging in a nose ahead and forcing the through car to brake (the
+  /// "merges in too confidently" complaint).
+  ///
+  /// Deadlock-free at any size, because the through car is given PRIORITY in the
+  /// taper (see [_applyConvergenceYield]): it ignores an ending car that is still
+  /// yielding to it and only follows one that has COMMITTED (led by more than this
+  /// margin). That dual suppression removes the band where both cars yield to each
+  /// other — the old "stuck on the merge spot, blinker on, forever" freeze — so
+  /// this is a free behaviour knob now, not pinned to the lead-detection cone (the
+  /// reason it used to be `kCarLength * 0.5`).
+  static const double _mergeLeadMargin = kNpcSafeGapDistance;
 
   bool _taskShown = false;
   bool _playerEverMerged = false;
@@ -284,6 +289,8 @@ class LaneTransitionTile extends TileBase {
         _npcThrough,
         northbound: true,
         signal: true,
+        allNpcs: allNpcs,
+        playerCar: playerCar,
         extraSurvivingY:
             playerOnThrough ? [worldToLocal(playerCar.position).y] : const [],
       );
@@ -297,6 +304,7 @@ class LaneTransitionTile extends TileBase {
         _npcOncomingInner,
         northbound: false,
         signal: false,
+        allNpcs: allNpcs,
       );
     }
   }
@@ -313,6 +321,8 @@ class LaneTransitionTile extends TileBase {
     Spline survivingLane, {
     required bool northbound,
     required bool signal,
+    required List<NpcCar> allNpcs,
+    PlayerCar? playerCar,
     Iterable<double> extraSurvivingY = const [],
   }) {
     final survY = <double>[
@@ -339,8 +349,9 @@ class LaneTransitionTile extends TileBase {
       double gap = double.infinity;
       for (final vY in survY) {
         final ahead = northbound ? (myY - vY) : (vY - myY); // >0 ⇒ they're ahead
-        // The surviving car is already behind us (and far enough back that IT now
-        // brakes for us, see [_mergeLeadMargin]) → we've won the spot, drive on.
+        // We clearly lead this surviving car (by more than the safe margin) →
+        // we've won a clean gap, take the spot and drive on. Otherwise give way:
+        // tuck in behind (it's ahead) or drop back (it's level / just behind).
         if (ahead < -_mergeLeadMargin) continue;
         final g = (ahead - kCarLength).clamp(0.0, double.infinity);
         if (g < gap) gap = g;
@@ -351,6 +362,54 @@ class LaneTransitionTile extends TileBase {
             existing == null ? gap : math.min(existing, gap);
       }
     }
+
+    // Through-lane PRIORITY — the dual of the yield above. A surviving car
+    // IGNORES an ending car that is still giving way to it, so the ending car can
+    // be the sole yielder and the two never mutually stall (the freeze the old
+    // cone-pinned margin used to avoid is handled here instead, freeing the
+    // margin to be a deference knob). It still sees an ending car that has
+    // COMMITTED (leads by more than the margin), every other surviving car, and
+    // the player — those are real leads it must brake for.
+    for (final t in npcs) {
+      if (!identical(t.spline, survivingLane)) continue;
+      final tY = worldToLocal(t.position).y;
+      if (tY > _taperStartY || tY <= _taperEndY) continue;
+      final forward = Vector2(math.cos(t.angle), math.sin(t.angle));
+      double minGap = double.infinity;
+      // Scan the cross-seam superset (what super used), not just this tile's
+      // cars, or a lead that has already carried to the next tile gets dropped
+      // and the through car closes the gap at the seam. Only ending-lane cars on
+      // THIS tile match the suppression below; others are normal obstacles.
+      for (final other in allNpcs) {
+        if (identical(other, t)) continue;
+        if (identical(other.spline, endingLane)) {
+          final oY = worldToLocal(other.position).y;
+          final ahead = northbound ? (oY - tY) : (tY - oY); // <0 ⇒ ending car ahead of us
+          // Still yielding to us (hasn't committed) → it'll drop back, ignore it.
+          if (ahead >= -_mergeLeadMargin) continue;
+        }
+        final g = _worldGapAhead(t.position, forward, other.position);
+        if (g != null && g < minGap) minGap = g;
+      }
+      if (playerCar != null) {
+        final pg = _worldGapAhead(t.position, forward, playerCar.position);
+        if (pg != null && pg < minGap) minGap = pg;
+      }
+      t.brain.leadCarDistance = minGap.isFinite ? minGap : null;
+    }
+  }
+
+  /// Bumper-to-bumper gap if [other] is ahead of a car at [from] heading
+  /// [forward] and within its lane cone, else null. Mirrors [TileBase]'s private
+  /// lead-car geometry (which a subclass can't reach) so the through-lane
+  /// priority recompute uses the exact same cone.
+  double? _worldGapAhead(Vector2 from, Vector2 forward, Vector2 other) {
+    final delta = other - from;
+    final fwd = delta.dot(forward);
+    if (fwd < kCarLength * 0.5) return null; // behind or overlapping
+    final lateral = (delta - forward * fwd).length;
+    if (lateral > kCarWidth * 1.8) return null; // different lane
+    return (fwd - kCarLength).clamp(0.0, double.infinity);
   }
 
   /// Passive, lane-scoped player grading (merge tile only). "Actively merging" =

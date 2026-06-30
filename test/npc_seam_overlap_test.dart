@@ -75,9 +75,15 @@ void main() {
       final tile = tm.activeTile as StraightTile;
       final splineA = tile.npcPaths[2];
       final splineB = tile.npcPaths[3];
-      final speed = kmhToUnits(40); // 200 u/s
+      final npcSpeed = kmhToUnits(50); // 250 u/s
+      // The player is well SLOWER than the NPC, so there is real closing speed —
+      // a genuine forced brake. (At matched speed the player forces no brake, by
+      // design: see DriverReactionDetector.isForcedHardBrake.) Still > kReactMinSpeed
+      // so the player counts as actively cutting in, not a stopped car.
+      final playerSpeed = kmhToUnits(18); // 90 u/s
 
-      final npc = NpcCar(definition: CarVariants.all.first, profileSpeed: speed);
+      final npc =
+          NpcCar(definition: CarVariants.all.first, profileSpeed: npcSpeed);
       npc.assignSpline(splineA,
           worldOffset: tile.position, worldAngle: tile.orientation);
       tm.allNpcs.add(npc);
@@ -104,9 +110,9 @@ void main() {
         }
         npc.position = Vector2.zero();
         npc.angle = ang;
-        npc.speed = speed;
+        npc.speed = npcSpeed;
         player.position = along * ahead + perp * 30;
-        player.speed = speed;
+        player.speed = playerSpeed;
       }
 
       place(400); // frame 1: first sight (re-baseline), far

@@ -145,42 +145,60 @@ void main() {
       }
     });
 
-    test('a merging car slightly AHEAD of a through car does NOT gridlock — it '
-        'clears the merge (the "stuck on the merge spot, blinker on, forever" bug)',
-        () {
-      // The mutual-stall repro: the merging (outer) car is ~33u ahead of a through
-      // (inner) car — INSIDE the old kCarLength skip band, so the merging car used
-      // to yield to a car it was already ahead of while that car braked for it.
-      // Both froze in the taper forever (the merging car keeping its left blinker
-      // on). With _mergeLeadMargin aligned to the lead cone, the merging car claims
-      // the spot it leads and drives on.
+    test('a merging car only slightly ahead GIVES WAY to the through car '
+        '(through keeps priority) instead of barging in — and still clears', () {
+      // The corrected merge: the ending lane yields to through traffic. The
+      // merging (outer) car is ~36u ahead of a through (inner) car but not by a
+      // safe margin, so it drops back and lets the through car take the lane,
+      // rather than claiming the spot a nose ahead and forcing the through car to
+      // brake (the "merges in too confidently" complaint). It must NOT freeze —
+      // never the old mutual stall that pinned it in the taper, blinker on.
       final merge = npcAt(mergeLane, 2, 600, speed: kmhToUnits(40));
-      final through = npcAt(throughLane, 1, 636, speed: kmhToUnits(40)); // ~33u back
+      final through = npcAt(throughLane, 1, 636, speed: kmhToUnits(40)); // ~36u back
       tile.npcs.addAll([merge, through]);
 
       const dt = 1 / 60;
-      for (int i = 0; i < 240; i++) {
+      for (int i = 0; i < 600; i++) {
         tile.updateNpcSensors(dt, player, tile.npcs, const []);
         merge.update(dt);
         through.update(dt);
       }
+      expect(localY(through), lessThan(localY(merge)),
+          reason: 'the through car kept priority and pulled ahead — the merging '
+              'car gave way instead of forcing it to yield');
       expect(localY(merge), lessThan(250),
-          reason: 'the merging car cleared the convergence instead of dead-locking '
-              'with the through car behind it (the repro froze it at y≈560)');
+          reason: 'the merging car still cleared the convergence (no deadlock)');
     });
 
-    test('a merging car AHEAD of a through car never overlaps it either — the '
-        'tighter yield margin is safe (arbiter of the old "reintroduces overlap" '
-        'worry)', () {
-      // The memory warned a smaller margin would reintroduce pass-through overlap.
-      // It does not: once the merging car is past the lead-cone threshold ahead,
-      // the THROUGH car sees it and brakes/drops back, so they never phase through.
+    test('a merging car level with a through car drops in BEHIND it, never '
+        'forcing the through car to yield', () {
+      // The crux of the fix: side-by-side, the through (left) lane has priority
+      // and the ending (right) lane gives way. The merge car must end up behind.
+      final merge = npcAt(mergeLane, 2, 600, speed: kmhToUnits(40));
+      final through = npcAt(throughLane, 1, 600, speed: kmhToUnits(40)); // level
+      tile.npcs.addAll([merge, through]);
+
+      const dt = 1 / 60;
+      for (int i = 0; i < 600; i++) {
+        tile.updateNpcSensors(dt, player, tile.npcs, const []);
+        merge.update(dt);
+        through.update(dt);
+      }
+      expect(localY(through), lessThan(localY(merge)),
+          reason: 'the through car went first; the merge car tucked in behind it');
+    });
+
+    test('giving way, the merging car never overlaps the through car as it drops '
+        'back and the lanes converge', () {
+      // Phase-through guard for the new drop-back: while the merging car gives
+      // way and the through car (priority) passes it, the two must never pass
+      // through each other as the lanes pinch together.
       final merge = npcAt(mergeLane, 2, 600, speed: kmhToUnits(40));
       final through = npcAt(throughLane, 1, 636, speed: kmhToUnits(40));
       tile.npcs.addAll([merge, through]);
 
       const dt = 1 / 60;
-      for (int i = 0; i < 180; i++) {
+      for (int i = 0; i < 240; i++) {
         tile.updateNpcSensors(dt, player, tile.npcs, const []);
         merge.update(dt);
         through.update(dt);
@@ -189,9 +207,28 @@ void main() {
           through.position, kCarWidth, kCarLength, through.angle,
         );
         expect(overlap, isFalse,
-            reason: 'merge-ahead cars must not phase through as the lanes converge '
+            reason: 'cars must not phase through as the lanes converge '
                 '(frame $i, merge y=${localY(merge).toStringAsFixed(0)})');
       }
+    });
+
+    test('through-lane priority keeps a lead that has carried to the next tile '
+        '(the recompute scans the cross-seam superset, not just this tile)', () {
+      // The priority recompute OVERWRITES leadCarDistance, so it must see what
+      // super saw — allNpcs, the cross-seam superset — or a through car whose real
+      // lead already crossed the seam reads the road as clear and closes the gap.
+      final through = npcAt(throughLane, 1, 600, speed: kmhToUnits(40));
+      final carriedLead = // ~80u ahead, same lane, but NOT governed by this tile
+          npcAt(throughLane, 1, 520, speed: kmhToUnits(40));
+      tile.npcs.add(through);
+      final allNpcs = [through, carriedLead]; // super still sees it across the seam
+
+      tile.updateNpcSensors(1 / 60, player, allNpcs, const []);
+
+      expect(through.brain.leadCarDistance, isNotNull,
+          reason: 'the through car still brakes for its lead across the seam');
+      expect(through.brain.leadCarDistance, lessThan(kNpcSafeGapDistance),
+          reason: 'the lead distance reflects the carried car just ahead');
     });
   });
 
