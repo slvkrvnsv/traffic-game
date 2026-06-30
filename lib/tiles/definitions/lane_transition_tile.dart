@@ -400,12 +400,14 @@ class LaneTransitionTile extends TileBase {
     _drawPavement(canvas);
     _drawRoad(canvas);
     _drawMarkings(canvas);
-    // Sign on the player's right shoulder near the entry — the lane-ends warning
-    // on a merge, its mirror (lane added) on a widen. Oncoming side never signed.
+    // Sign on the player's right shoulder at the tile's beginning (the player
+    // enters at the bottom) — the lane-ends warning on a merge, its mirror
+    // (lane added) on a widen. Oncoming side never signed.
     RoadSigns.draw(
       canvas,
       merging ? RoadSign.laneEndsRight : RoadSign.laneAddedRight,
-      const Offset(868, 980),
+      const Offset(868, 1100),
+      r: 35,
     );
     drawDecorations(canvas);
     debugRenderSplines(canvas);
@@ -487,8 +489,10 @@ class LaneTransitionTile extends TileBase {
       ..strokeWidth = 3; // match the straight tiles' lane lines
     const normalDash = 40.0, normalGap = 40.0; // ordinary divider (2-lane road)
     const denseDash = 22.0, denseGap = 14.0; // lane-drop warning dots
-    double y = 0;
-    while (y < kTileSize) {
+    const startInset = 60.0, endInset = 30.0; // keep dashes clear of the seams
+    final yLimit = kTileSize - endInset;
+    double y = startInset;
+    while (y < yLimit) {
       // Density follows how much outer lane is left: full lane → ordinary
       // divider, half gone → already the dense lane-drop dots (full density by
       // the taper mid-point). Applied on BOTH sides — the outer lane is ending
@@ -497,7 +501,7 @@ class LaneTransitionTile extends TileBase {
       final f = ((1.0 - _openness(y)) / 0.5).clamp(0.0, 1.0);
       final dash = normalDash + (denseDash - normalDash) * f;
       final gap = normalGap + (denseGap - normalGap) * f;
-      final yEnd = (y + dash).clamp(0.0, kTileSize);
+      final yEnd = (y + dash).clamp(0.0, yLimit);
       if (_openness((y + yEnd) / 2) > 0.04) {
         canvas.drawLine(Offset(boundaryX, y), Offset(boundaryX, yEnd), paint);
       }
@@ -518,8 +522,20 @@ class LaneTransitionTile extends TileBase {
     // Approach edge of the taper, and the direction back into the approach.
     final approachEdgeY = merging ? _taperStartY : _taperEndY;
     final backDir = merging ? 1.0 : -1.0;
-    for (final back in const [30.0, 130.0, 230.0]) {
-      final y = approachEdgeY + backDir * back;
+    // Three advance arrows spread as wide as the approach allows, from the
+    // taper edge (back 0) out to the seam guard — the widest even spacing that
+    // still fits three arrows before the taper. The extend tile's approach
+    // (above the taper) is shorter than the merge tile's (below it), so its
+    // spacing is a touch tighter; both are maxed to the lane.
+    final backs = merging
+        ? const [0.0, 130.0, 260.0]
+        : const [0.0, 105.0, 210.0];
+    // Nudge the whole group 50px toward the taper edge — north on the merge
+    // tile, its mirror (south) on the widen tile — applied via [backDir] so
+    // both stay symmetric and keep all three arrows on-tile.
+    const groupShift = 50.0;
+    for (final back in backs) {
+      final y = approachEdgeY + backDir * (back - groupShift);
       if (y < 40 || y > kTileSize - 40) continue;
       final arrowX = boundaryX - mergeDirX * kLaneWidth * 0.5 * _openness(y);
       // Mostly along travel, leaning the merge way — reads as "move over".

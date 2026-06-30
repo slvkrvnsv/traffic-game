@@ -2428,13 +2428,18 @@ class IntersectionTile extends TileBase {
   }
 
   void _drawIntersectionBox(Canvas canvas) {
+    // In test mode the conflict box is a hair lighter so its bounds are
+    // visible; in normal play it matches the road so it reads as plain asphalt.
+    final color = DebugState.showDebug
+        ? const Color(0xFF4E4E4E)
+        : const Color(0xFF424242);
     canvas.drawRect(
       Rect.fromCenter(
         center: const Offset(_cx, _cy),
         width: kRoadWidth,
         height: kRoadWidth,
       ),
-      Paint()..color = const Color(0xFF4E4E4E),
+      Paint()..color = color,
     );
   }
 
@@ -2520,10 +2525,14 @@ class IntersectionTile extends TileBase {
       ..color = const Color(0xFFFFD600)
       ..strokeWidth = 3;
 
-    _drawDash(canvas, _cx, 0, _cx, _cy - _halfBox, center);
-    _drawDash(canvas, _cx, _cy + _halfBox, _cx, kTileSize, center);
-    _drawDash(canvas, 0, _cy, _cx - _halfBox, _cy, center);
-    _drawDash(canvas, _cx + _halfBox, _cy, kTileSize, _cy, center);
+    // End the centre line ~20px short of each stop line (on the approach side),
+    // so it no longer runs past the line, over the zebra, into the box mouth.
+    final back = _halfBox + _stopLineGap + 20.0; // centre → line-end distance
+
+    _drawDash(canvas, _cx, 0, _cx, _cy - back, center); // N arm (S-bound)
+    _drawDash(canvas, _cx, _cy + back, _cx, kTileSize, center); // S arm (N-bound)
+    _drawDash(canvas, 0, _cy, _cx - back, _cy, center); // W arm (E-bound)
+    _drawDash(canvas, _cx + back, _cy, kTileSize, _cy, center); // E arm (W-bound)
   }
 
   void _drawDash(

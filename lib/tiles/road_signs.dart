@@ -20,33 +20,59 @@ class RoadSigns {
   static const _black = Color(0xFF111111);
   static const _postColor = Color(0xFF9E9E9E);
 
-  /// Draw [sign] centred at [center] with diamond half-diagonal [r].
+  /// Draw [sign] centred at [center] with diamond half-diagonal [r]. The fixed
+  /// details (post, border) scale with [r] so the whole sign shrinks together.
   static void draw(Canvas canvas, RoadSign sign, Offset center, {double r = 70}) {
     final sx = center.dx, sy = center.dy;
+    final k = r / 70; // scale the post + border with the diamond
 
     // Post.
     canvas.drawRect(
-      Rect.fromLTRB(sx - 4, sy + r, sx + 4, sy + r + 90),
+      Rect.fromLTRB(sx - 4 * k, sy + r, sx + 4 * k, sy + r + 90 * k),
       Paint()..color = _postColor,
     );
 
-    // Diamond: yellow fill + black border.
-    final diamond = Path()
-      ..moveTo(sx, sy - r)
-      ..lineTo(sx + r, sy)
-      ..lineTo(sx, sy + r)
-      ..lineTo(sx - r, sy)
-      ..close();
+    // Diamond with softly rounded corners: yellow fill + black border.
+    final diamond = _roundedDiamond(sx, sy, r, r * 0.25);
     canvas.drawPath(diamond, Paint()..color = _yellow);
     canvas.drawPath(
       diamond,
       Paint()
         ..color = _black
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 6,
+        ..strokeWidth = 6 * k
+        ..strokeJoin = StrokeJoin.round,
     );
 
     _drawSymbol(canvas, sign, sx, sy, r);
+  }
+
+  /// A diamond (half-diagonal [r], centred at [sx],[sy]) with its four corners
+  /// rounded — each vertex backed off by [round] along both edges and bridged
+  /// with a quadratic arc through the corner.
+  static Path _roundedDiamond(double sx, double sy, double r, double round) {
+    final pts = <Offset>[
+      Offset(sx, sy - r), // top
+      Offset(sx + r, sy), // right
+      Offset(sx, sy + r), // bottom
+      Offset(sx - r, sy), // left
+    ];
+    final path = Path();
+    for (int i = 0; i < 4; i++) {
+      final curr = pts[i];
+      final prev = pts[(i + 3) % 4];
+      final next = pts[(i + 1) % 4];
+      final pIn = curr + _unit(prev - curr) * round;
+      final pOut = curr + _unit(next - curr) * round;
+      i == 0 ? path.moveTo(pIn.dx, pIn.dy) : path.lineTo(pIn.dx, pIn.dy);
+      path.quadraticBezierTo(curr.dx, curr.dy, pOut.dx, pOut.dy);
+    }
+    return path..close();
+  }
+
+  static Offset _unit(Offset o) {
+    final d = o.distance;
+    return d == 0 ? o : o / d;
   }
 
   /// The lane-transition symbol. Authored for the *narrowing* case (the taper

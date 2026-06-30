@@ -42,7 +42,9 @@ class TrafficGame extends FlameGame {
   String? _pendingGameOverReason;
 
   @override
-  Color backgroundColor() => const Color(0xFF1A1A2E);
+  // Grass green (matches every tile's groundColor) so the world beyond the
+  // loaded tiles blends into the scenery instead of a dark void.
+  Color backgroundColor() => const Color(0xFF4CAF50);
 
   @override
   Future<void> onLoad() async {

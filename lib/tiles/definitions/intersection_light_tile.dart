@@ -1617,10 +1617,15 @@ class IntersectionLightTile extends TileBase {
   }
 
   void _drawBox(Canvas canvas) {
+    // In test mode the conflict box is a hair lighter so its bounds are
+    // visible; in normal play it matches the road so it reads as plain asphalt.
+    final color = DebugState.showDebug
+        ? const Color(0xFF4E4E4E)
+        : const Color(0xFF424242);
     canvas.drawRect(
         Rect.fromCenter(
             center: const Offset(_cx, _cy), width: _half * 2, height: _half * 2),
-        Paint()..color = const Color(0xFF4E4E4E));
+        Paint()..color = color);
   }
 
   void _drawRoundedCurbs(Canvas canvas) {
@@ -1672,16 +1677,18 @@ class IntersectionLightTile extends TileBase {
     final yellow = Paint()
       ..color = const Color(0xFFFFD600)
       ..strokeWidth = 3;
-    // Double-yellow centreline on each arm (outside the box).
+    // Double-yellow centreline on each arm, ending ~20px short of each stop
+    // line (approach side) so it stops before the line/zebra, not at the box.
+    final back = _stopLineFromCentre + 20.0; // centre → line-end distance
     for (final dx in const [-4.0, 4.0]) {
-      canvas.drawLine(Offset(_cx + dx, 0), Offset(_cx + dx, _cy - _half), yellow);
+      canvas.drawLine(Offset(_cx + dx, 0), Offset(_cx + dx, _cy - back), yellow);
       canvas.drawLine(
-          Offset(_cx + dx, _cy + _half), Offset(_cx + dx, _h), yellow);
+          Offset(_cx + dx, _cy + back), Offset(_cx + dx, _h), yellow);
     }
     for (final dy in const [-4.0, 4.0]) {
-      canvas.drawLine(Offset(0, _cy + dy), Offset(_cx - _half, _cy + dy), yellow);
+      canvas.drawLine(Offset(0, _cy + dy), Offset(_cx - back, _cy + dy), yellow);
       canvas.drawLine(
-          Offset(_cx + _half, _cy + dy), Offset(_w, _cy + dy), yellow);
+          Offset(_cx + back, _cy + dy), Offset(_w, _cy + dy), yellow);
     }
     // Dashed white lane dividers between the two lanes on each side of each arm.
     _dash(canvas, vertical: true, at: _cx + kLaneWidth); // player side 680
@@ -1695,10 +1702,13 @@ class IntersectionLightTile extends TileBase {
       ..color = const Color(0xFFFFFFFF)
       ..strokeWidth = 3;
     const dashLen = 40.0, gap = 40.0;
+    // End the dividers slightly before each stop line (like the yellow
+    // centreline here and the 1-lane intersection), not at the box edge.
+    final back = _stopLineFromCentre + 20.0;
     if (vertical) {
       for (final seg in [
-        [0.0, _cy - _half],
-        [_cy + _half, _h]
+        [0.0, _cy - back],
+        [_cy + back, _h]
       ]) {
         for (double y = seg[0]; y < seg[1]; y += dashLen + gap) {
           canvas.drawLine(
@@ -1707,8 +1717,8 @@ class IntersectionLightTile extends TileBase {
       }
     } else {
       for (final seg in [
-        [0.0, _cx - _half],
-        [_cx + _half, _w]
+        [0.0, _cx - back],
+        [_cx + back, _w]
       ]) {
         for (double x = seg[0]; x < seg[1]; x += dashLen + gap) {
           canvas.drawLine(
